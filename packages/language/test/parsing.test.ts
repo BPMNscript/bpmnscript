@@ -20,6 +20,7 @@ import type {
 } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
+  printName,
   renderExpression,
   settingsOf,
 } from '@bpmn-script/language';
@@ -171,6 +172,8 @@ describe('Parsing - control flow and containers', () => {
   parallel { if (amount > 10000) { user A } { service B } else { user C } }
   parallel { { user A } { user B } { user C } }
   parallel { { if (a) { user A } else { user B } } { user C } }
+  if (a) { user A } else if (b) { user B } else fail
+  parallel { if (a) { user A } if (b) { user B } else fail }
 }`,
       [
         'UserTask(name="A"), UserTask(name="B"), UserTask(name="C")',
@@ -181,6 +184,8 @@ describe('Parsing - control flow and containers', () => {
         'ParallelStatement(branches=[ParallelBranch(condition=Relational(left=VarRef(ref=->amount), op=">", right=LiteralInt(value=10000)), body=Block(statements=[UserTask(name="A")])), ParallelBranch(body=Block(statements=[ServiceTask(name="B")])), ParallelBranch(otherwise=true, body=Block(statements=[UserTask(name="C")]))])',
         'ParallelStatement(branches=[ParallelBranch(body=Block(statements=[UserTask(name="A")])), ParallelBranch(body=Block(statements=[UserTask(name="B")])), ParallelBranch(body=Block(statements=[UserTask(name="C")]))])',
         'ParallelStatement(branches=[ParallelBranch(body=Block(statements=[IfStatement(condition=VarRef(ref=->a), then=Block(statements=[UserTask(name="A")]), elseBlock=Block(statements=[UserTask(name="B")]))])), ParallelBranch(body=Block(statements=[UserTask(name="C")]))])',
+        'IfStatement(condition=VarRef(ref=->a), then=Block(statements=[UserTask(name="A")]), elseIfs=[ElseIf(condition=VarRef(ref=->b), body=Block(statements=[UserTask(name="B")]))], fail="fail")',
+        'ParallelStatement(branches=[ParallelBranch(condition=VarRef(ref=->a), body=Block(statements=[UserTask(name="A")])), ParallelBranch(condition=VarRef(ref=->b), body=Block(statements=[UserTask(name="B")]))], fail="fail")',
       ],
     ],
     [
@@ -422,6 +427,36 @@ describe('Parsing - soft words stay plain identifiers', () => {
     ],
   ])('%s', async (_title, source, expected) => {
     await expectProcess(source, expected);
+  });
+});
+
+describe('Parsing - names in backticks', () => {
+  test.each([
+    ['a keyword is written in backticks', 'process', '`process`'],
+    ['a dot is written in backticks', 'Task.1', '`Task.1`'],
+    ['a trailing hyphen is written in backticks', 'Review-', '`Review-`'],
+    ['a leading digit is written in backticks', '1st', '`1st`'],
+    ['a space is written in backticks', 'Payment failed', '`Payment failed`'],
+    ['a backtick and a backslash take a backslash', 'a`b\\c', '`a\\`b\\\\c`'],
+    ['a plain name stays plain', 'invoice-approval', 'invoice-approval'],
+  ])('%s', async (_title, text, printed) => {
+    expect(printName(text)).toBe(printed);
+    const model = await parseModel(`process p { error ${printed} }`);
+    expect(model.processes[0]!.decls.map((d) => d.name)).toEqual([text]);
+  });
+
+  test('a name in backticks and its plain twin are one name to every reference', async () => {
+    await expectProcess(
+      'process `process` { start `S` goto S on S: timer("PT1H") { end `end` } }',
+      'Process(name="process", body=[StartEvent(name="S"), GotoStatement(target=->S), OnHandler(host=->S, trigger="timer", items=[ParenValue(value=LiteralString(value="PT1H"))], body=Block(statements=[EndEvent(name="end")]))])',
+    );
+  });
+
+  test('a fence is never read as a name', async () => {
+    await expectProcess(
+      'process p { script S ```js\nx = `a`\n``` }',
+      'Process(name="p", body=[ScriptTask(name="S", body="```js\\nx = `a`\\n```")])',
+    );
   });
 });
 
@@ -790,83 +825,93 @@ describe('Parsing - repeat clause', () => {
   );
 });
 
-/** Chevrotain's list-of-alternatives wording, which carries no guidance. */
-const STOCK_ALTERNATIVES = '<stock list of token alternatives>';
+const reservedWordAsName = (word: string) =>
+  `'${word}' is a reserved word and cannot be a plain name here\n` +
+  `help: to use '${word}' as the name, write it in backticks as '\`${word}\`'`;
 
 const reservedWord = (word: string) =>
-  `'${word}' is a reserved word and cannot be used as a plain name here. ` +
-  `To refer to a variable named '${word}', write it as a quoted raw expression: "\${${word}}".`;
+  `'${word}' is a reserved word and cannot be a plain name here\n` +
+  `help: to refer to a variable named '${word}', write the quoted raw expression "\${${word}}"`;
+
+const STEP_KEYWORD_NOTE =
+  "note: every step starts with a keyword such as 'start', 'user', 'service', 'if', 'on', 'throw', or 'emit'";
 
 const notAStepKeyword = (word: string) =>
-  `'${word}' is neither a known declaration nor a step keyword. ` +
-  "A declaration starting with a plain word is 'error' or 'escalation' " +
-  'followed by the name it declares; every step starts ' +
-  "with a keyword such as 'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...";
+  `'${word}' is neither a known declaration nor a step keyword\n` +
+  "note: a declaration starting with a plain word is 'error' or 'escalation' followed by the name it declares\n" +
+  STEP_KEYWORD_NOTE;
 
 const stepKeywordOnly = (word: string) =>
-  `'${word}' is not a step keyword; every step starts with a keyword such as ` +
-  "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...";
+  `'${word}' is not a step keyword\n${STEP_KEYWORD_NOTE}`;
 
 const notATypeWord = (word: string) =>
-  `'${word}' is not a word this position takes; write 'string', 'number', ` +
-  `'boolean', 'date', 'json', or 'any'.`;
+  `'${word}' is not a word this position takes\n` +
+  "help: write 'string', 'number', 'boolean', 'date', 'json', or 'any'";
+
+const UNCLOSED_BLOCK =
+  "expected '}' before the end of the file\nnote: a block is still open";
 
 const REPEAT_CLAUSE_GUIDANCE =
-  "A repeat clause ('for ...') attaches to the step that repeats. " +
-  'The statement before it does not take one; move the clause onto ' +
-  'the step that should.';
+  "a repeat clause ('for ...') follows a statement that does not take one\n" +
+  'note: a repeat clause attaches to the step that repeats\n' +
+  'help: move the clause onto the step that should repeat';
 
 const VAR_PLACEMENT_GUIDANCE =
-  "A variable declaration ('var ...') must come before the first step in " +
-  'the process, with the other declarations. Move it above the first ' +
-  'statement.';
+  "a variable declaration ('var ...') comes after the first step\n" +
+  'note: declarations come before the first step of the process\n' +
+  'help: move it above the first statement';
 
 describe('Parsing - sources the parser rejects', () => {
   test.each<readonly [string, string, readonly string[]]>([
     [
       'parallel requires at least two branches',
       `process p { parallel { { user A } } }`,
-      [STOCK_ALTERNATIVES, 'Expecting end of file but found `}`.'],
+      [
+        "expected 'if', '{', or 'else' after '}'",
+        "unexpected '}' outside any process",
+      ],
     ],
     // The `else if` row blames `if`: with the parens breaking the `else if`
-    // shape, the lookahead settles on `else` opening a plain block.
+    // shape, the lookahead settles on `else` taking a block or `fail`.
     [
       'an else if head takes no settings: the if head governs the whole chain',
       `process p { if (a) { user A } else if (b) (asyncBefore: true) { user B } }`,
-      [
-        "Expecting token of type '{' but found `if`.",
-        "Expected '}' before the end of the file: a block is still open.",
-      ],
+      ["expected '{' or 'fail' after 'else'"],
+    ],
+    [
+      "a keyword after 'else' other than 'if' is no name to fix",
+      `process p { var a: boolean if (a) { user A } else user B }`,
+      ["expected '{' or 'fail' after 'else'"],
     ],
     [
       'a parallel branch head takes no settings: the parallel head governs the fork and the join',
       `process p { parallel { if (a) (asyncBefore: true) { user A } { user B } } }`,
-      ["Expecting token of type '{' but found `(`."],
+      ["expected '{' after ')'"],
     ],
     [
       'a race requires at least two branches',
       `process p { await { message("M") { user U } } }`,
-      [STOCK_ALTERNATIVES, 'Expecting end of file but found `}`.'],
+      ["expected a name after '}'", "unexpected '}' outside any process"],
     ],
     [
       '`attempt` is reserved: it does not name a step',
       `process p { user attempt }`,
-      [reservedWord('attempt'), "Expecting token of type 'ID' but found `}`."],
+      [reservedWordAsName('attempt'), "expected a name after 'attempt'"],
     ],
     [
       '`attempt` is reserved: it does not name a variable',
       `process p { var attempt: string }`,
-      [reservedWord('attempt'), "Expecting token of type 'ID' but found `:`."],
+      [reservedWord('attempt'), "expected a name after 'attempt'"],
     ],
     [
       '`await` is reserved: it does not name a variable',
       `process p { var await: string }`,
-      [reservedWord('await'), STOCK_ALTERNATIVES],
+      [reservedWord('await'), "expected a name, '(', or '{' after 'await'"],
     ],
     [
       'a colon with no trigger after it is rejected',
       `process p { user Pack on Pack: { } }`,
-      ["Expecting token of type 'ID' but found `{`."],
+      ["expected a name after ':'"],
     ],
     ...(['in', 'out', 'local', 'alongside'] as const).map(
       (word) =>
@@ -876,27 +921,68 @@ describe('Parsing - sources the parser rejects', () => {
           [reservedWord(word)],
         ] as const,
     ),
-    ...(['call', 'on', 'throw', 'emit'] as const).map(
+    [
+      // The call's member block takes the braces of the `if` body.
+      '`call` is rejected as a bare identifier in expression position',
+      `process p { if (call > 2) { user A } }`,
+      [
+        reservedWord('call'),
+        "expected a name after 'call'",
+        "expected '}' after '{'",
+        "unexpected '}' outside any process",
+      ],
+    ],
+    ...(['on', 'throw', 'emit'] as const).map(
       (word) =>
         [
           `\`${word}\` is rejected as a bare identifier in expression position`,
           `process p { if (${word} > 2) { user A } }`,
           [
             reservedWord(word),
-            "Expecting token of type 'ID' but found `>`.",
-            'Expecting end of file but found `}`.',
+            `expected a name after '${word}'`,
+            "unexpected '}' outside any process",
           ],
         ] as const,
     ),
     [
       'a trailing comma in a list is rejected',
       `process p { service S { input a = [1, ] } }`,
-      [STOCK_ALTERNATIVES],
+      ["expected a value after ','"],
     ],
     [
       'a trailing comma in a map is rejected',
       `process p { service S { input a = { k: 1, } } }`,
-      [STOCK_ALTERNATIVES],
+      ["expected a name or a quoted string after ','"],
+    ],
+    [
+      'an operator with no right operand expects a value after it',
+      `process p { if (c && ) { user A } }`,
+      ["expected a value after '&&'"],
+    ],
+    [
+      'a step keyword with no name expects a name after the keyword',
+      `process p { user }`,
+      ["expected a name after 'user'"],
+    ],
+    [
+      'a stray token after the last process is outside any process',
+      `process p { user A } }`,
+      ["unexpected '}' outside any process"],
+    ],
+    [
+      'text that opens no process is outside any process',
+      `garbage`,
+      ["unexpected 'garbage' outside any process"],
+    ],
+    [
+      'an unclosed brace says a block is still open',
+      `process p { user A`,
+      [UNCLOSED_BLOCK],
+    ],
+    [
+      'a character the language has no token for is named',
+      `process p { user A @ }`,
+      ["unexpected character '@'"],
     ],
     [
       'a mistyped statement keyword gets the declaration-or-step guidance',
@@ -912,9 +998,9 @@ describe('Parsing - sources the parser rejects', () => {
       'a mistyped step keyword with a name in a braced block names the missing = and the step guidance',
       `process p { if (a) { user B usr A } }`,
       [
-        "Expected '=' after 'A': inside a block, two plain words start a " +
-          "parameter such as 'input name = value'; every step starts with a " +
-          "keyword such as 'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...",
+        "expected '=' after 'A'\n" +
+          "note: inside a block, two plain words start a parameter such as 'input name = value'\n" +
+          STEP_KEYWORD_NOTE,
       ],
     ],
     [
@@ -923,24 +1009,24 @@ describe('Parsing - sources the parser rejects', () => {
       [stepKeywordOnly('usr')],
     ],
     [
-      'a parameter direction missing its name keeps the stock message, since the word is not a mistyped step',
+      'a parameter direction missing its name expects a name, since the word is not a mistyped step',
       `process p { if (a) { user B input } }`,
-      ["Expecting token of type 'ID' but found `}`."],
+      ["expected a name after 'input'"],
     ],
     [
       'a missing ) names the token it stopped at',
       `process p { if (a { user A } }`,
-      ["Expected ')' before '{': a '(' is still open."],
+      ["expected ')' before '{'\nnote: a '(' is still open"],
     ],
     [
       'a missing ) at the end of the file says so',
       `process p { user A (asyncBefore: true`,
-      ["Expected ')' before the end of the file: a '(' is still open."],
+      ["expected ')' before the end of the file\nnote: a '(' is still open"],
     ],
     [
       'a declaration kind followed by text blames the name slot, not the kind word',
       `process p { error "PF" }`,
-      ['Expecting token of type \'ID\' but found `"PF"`.'],
+      ["expected a name after 'error'"],
     ],
     [
       'a var declaration after the first step gets placement guidance',
@@ -973,151 +1059,195 @@ describe('Parsing - sources the parser rejects', () => {
     [
       'a reserved word in the type slot of a var declaration names the types it takes',
       'process p {\n  var amount: while\n  start S\n}',
-      [notATypeWord('while'), "Expecting token of type '(' but found `start`."],
+      [notATypeWord('while'), "expected '(' after 'while'"],
     ],
     [
       'a reserved word in the type slot of a form field gets the reserved-word guidance',
       'process p {\n  start S\n  user U { form { amount: while } }\n}',
       [
         reservedWord('while'),
-        "Expecting token of type '(' but found `}`.",
-        "Expecting token of type 'EOF' but found `}`.",
+        "expected '(' after 'while'",
+        "unexpected '}' outside any process",
       ],
     ],
     [
       'an ordinary word in the type slot gets the same guidance',
       'process p {\n  var amount: text\n  start S\n}',
-      [notATypeWord('text'), reservedWord('start')],
+      [notATypeWord('text'), reservedWordAsName('start')],
     ],
     [
-      'a quoted string in the type slot keeps the stock message',
+      'a quoted string in the type slot is named as unexpected',
       'process p {\n  var amount: "text"\n  start S\n}',
-      [STOCK_ALTERNATIVES],
+      [`unexpected '"text"' after ':'`],
     ],
   ])('%s', async (_title, source, expected) => {
-    const messages = (await parseErrors(source)).map((message) =>
-      /possible Token sequences/.test(message)
-        ? STOCK_ALTERNATIVES
-        : message.replace(/\n\s*/g, ' '),
-    );
-    expect(messages).toEqual(expected);
+    expect(await parseErrors(source)).toEqual(expected);
   });
 });
 
-type LabelCarrier = readonly [keyword: string, head: string, tail: string];
+type LabelCarrier = readonly [
+  keyword: string,
+  head: string,
+  tail: string,
+  refusal: string,
+];
+
+const closeAfter = (name: string) => `expected '}' after '${name}'`;
 
 const LABEL_CARRIERS: readonly LabelCarrier[] = [
-  ['process', 'process p', '{ start S }'],
-  ['start', 'process p { start S', '}'],
-  ['end', 'process p { end E', '}'],
-  ['user', 'process p { user X', '}'],
-  ['service', 'process p { service X', '}'],
-  ['step', 'process p { step X', '}'],
-  ['send', 'process p { send X', '}'],
-  ['receive', 'process p { receive X', '}'],
-  ['decide', 'process p { decide X', '}'],
-  ['script', 'process p { script X', `${FENCE}js\nwork()\n${FENCE} }`],
-  ['subprocess', 'process p { subprocess S', '{ user U } }'],
-  ['call', 'process p { call C', '}'],
+  ['process', 'process p', '{ start S }', "expected '{' after 'p'"],
+  ['start', 'process p { start S', '}', closeAfter('S')],
+  ['end', 'process p { end E', '}', closeAfter('E')],
+  ['user', 'process p { user X', '}', closeAfter('X')],
+  ['service', 'process p { service X', '}', closeAfter('X')],
+  ['step', 'process p { step X', '}', closeAfter('X')],
+  ['send', 'process p { send X', '}', closeAfter('X')],
+  ['receive', 'process p { receive X', '}', closeAfter('X')],
+  ['decide', 'process p { decide X', '}', closeAfter('X')],
+  [
+    'script',
+    'process p { script X',
+    `${FENCE}js\nwork()\n${FENCE} }`,
+    "expected a fenced script after 'X'",
+  ],
+  [
+    'subprocess',
+    'process p { subprocess S',
+    '{ user U } }',
+    "expected '{' after 'S'",
+  ],
+  ['call', 'process p { call C', '}', closeAfter('C')],
 ];
 
 describe('Parsing - a slot has one spelling', () => {
-  test.each<readonly [title: string, refused: string, taken: string]>([
+  test.each<
+    readonly [
+      title: string,
+      refused: string,
+      taken: string,
+      refusal: readonly string[],
+    ]
+  >([
     ...LABEL_CARRIERS.map(
-      ([keyword, head, tail]) =>
+      ([keyword, head, tail, refusal]) =>
         [
           `a \`${keyword}\` label is a setting, not a string after the name`,
           `${head} "L" ${tail}`,
           `${head}(label: "L") ${tail}`,
+          [refusal],
         ] as const,
     ),
     [
       'an element setting is written in the parens, not in the block',
       `process p { user U { assignee = "demo" } }`,
       `process p { user U(assignee: "demo") }`,
+      [
+        "expected 'form', a name, or 'on' after '{'",
+        "unexpected '}' outside any process",
+      ],
     ],
     [
       'a call setting is written in the parens, not in the block',
       `process p { call C { process = "q" } }`,
       `process p { call C(process: "q") }`,
+      ["expected '}' after '{'", "expected a name after 'process'"],
     ],
     [
       'a listener binding is written in the parens, not in a block of its own',
       `process p { user U { on create { class = "com.acme.L" } } }`,
       `process p { user U { on create(class: "com.acme.L") } }`,
+      [stepKeywordOnly('class')],
     ],
     [
       'a process label is a setting on the head, not a header declaration',
       `process p { label = "L" start S }`,
       `process p(label: "L") { start S }`,
+      [notAStepKeyword('label')],
     ],
     [
       'a process setting is written on the head, not as a header declaration',
       `process p { versionTag = "1.4" start S }`,
       `process p(versionTag: "1.4") { start S }`,
+      [notAStepKeyword('versionTag')],
     ],
     [
       "an error's message rides its declaration, not a declaration of its own",
       `process p { error "PF" message "Payment failed" start S }`,
       `process p { error PF(message: "Payment failed") start S }`,
+      ["expected a name after 'error'", notAStepKeyword('message')],
     ],
     [
       'a start names its message in the parens',
       `process p { start S message "M" }`,
       `process p { start S message("M") }`,
+      ["expected '}' after 'message'"],
     ],
     [
       'a start times its timer in the parens',
       `process p { start S timer after "PT1H" }`,
       `process p { start S timer("PT1H") }`,
+      [stepKeywordOnly('after')],
     ],
     [
       'an end carries whatever it names in the parens',
       `process p { end E terminate "X" }`,
       `process p { end E terminate("X") }`,
+      ["expected '}' after 'terminate'"],
     ],
     [
       'a handler names its code in the parens',
       `process p { on error "X" { user A } }`,
       `process p { on error("X") { user A } }`,
+      ["expected '{' after 'error'"],
     ],
     [
       'a handler times its timer in the parens',
       `process p { on timer after "PT1H" { user A } }`,
       `process p { on timer("PT1H") { user A } }`,
+      ["expected '{' after 'timer'", stepKeywordOnly('after')],
     ],
     [
       'a handler marks itself non-interrupting with a flag in the parens',
       `process p { on signal("S") alongside { user A } }`,
       `process p { on signal("S", alongside) { user A } }`,
+      ["expected '{' after ')'"],
     ],
     [
       'a throw names its code in the parens',
       `process p { throw error "C" }`,
       `process p { throw error("C") }`,
+      ["expected '}' after 'error'"],
     ],
     [
       'an emit names its code in the parens',
       `process p { emit signal "S" }`,
       `process p { emit signal("S") }`,
+      ["expected '}' after 'signal'"],
     ],
     [
       'an awaited event names its message in the parens',
       `process p { await message "M" }`,
       `process p { await message("M") }`,
+      ["expected '}' after 'message'"],
     ],
     [
       'an awaited event times its timer in the parens',
       `process p { await timer after "PT1H" }`,
       `process p { await timer("PT1H") }`,
+      ["expected '}' after 'after'"],
     ],
     [
       'a race branch heads on the same parens a plain await does',
       `process p { await { message "M" { user A } timer after "PT1H" { user B } } }`,
       `process p { await { message("M") { user A } timer("PT1H") { user B } } }`,
+      [
+        "expected '{' after 'message'",
+        "expected '{' after 'timer'",
+        stepKeywordOnly('after'),
+      ],
     ],
-  ])('%s', async (_title, refused, taken) => {
-    expect(await parseErrors(refused)).not.toEqual([]);
+  ])('%s', async (_title, refused, taken, refusal) => {
+    expect(await parseErrors(refused)).toEqual(refusal);
     expect(await parseErrors(taken)).toEqual([]);
   });
 });

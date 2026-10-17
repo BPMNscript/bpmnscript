@@ -19,8 +19,12 @@ function describeRoot(xml: string): string {
   const colon = tag.indexOf(':');
   const decl = colon === -1 ? 'xmlns' : `xmlns:${tag.slice(0, colon)}`;
   const uri = new RegExp(`<${tag}[^>]*?\\s${decl}="([^"]+)"`).exec(xml)?.[1];
-  const found = uri === undefined ? '' : `; found ${decl}=${uri}`;
-  return ` (root element is <${tag}>; expected <bpmn:definitions> in namespace ${BPMN_NAMESPACE}${found})`;
+  return [
+    '',
+    `note: the root element is '<${tag}>'`,
+    `note: BPMN expects '<bpmn:definitions>' in the namespace '${BPMN_NAMESPACE}'`,
+    ...(uri === undefined ? [] : [`note: the file declares '${decl}=${uri}'`]),
+  ].join('\n');
 }
 
 function printablePreview(text: string): string {
@@ -40,7 +44,7 @@ export function xmlInputProblem(xml: string): string | undefined {
   // `trim` strips a leading BOM (U+FEFF is ECMA-262 WhiteSpace).
   if (xml.trim() === '') return EMPTY_INPUT_MESSAGE;
   if (!xml.trimStart().startsWith('<')) {
-    return `not an XML document (starts with "${printablePreview(xml.trimStart())}")`;
+    return `not an XML document (starts with '${printablePreview(xml.trimStart())}')`;
   }
   return undefined;
 }

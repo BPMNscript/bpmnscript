@@ -52,7 +52,9 @@ function matchFence(line: string): { name: string; rule: any } | undefined {
 
 describe('fenced-script injection grammar', () => {
   it('is registered against source.bpmn-script at a path build:prepare copies it to', () => {
-    expect(injection.injectionSelector).toContain('source.bpmn-script');
+    expect(injection.injectionSelector).toBe(
+      'L:source.bpmn-script -comment -string',
+    );
 
     const entry = pkg.contributes.grammars.find(
       (g: { scopeName: string }) => g.scopeName === injection.scopeName,
@@ -60,7 +62,7 @@ describe('fenced-script injection grammar', () => {
     expect(entry).toBeDefined();
     expect(entry.injectTo).toEqual(['source.bpmn-script']);
     expect(pkg.scripts['build:prepare']).toContain(
-      `cp -f ./injection/bpmn-script.injection.tmLanguage.json ./${entry.path}`,
+      `fs.cpSync('injection/bpmn-script.injection.tmLanguage.json', '${entry.path}')`,
     );
     expect(() =>
       readFileSync(path.join(EXTENSION_DIR, entry.path)),
@@ -93,7 +95,7 @@ describe('fenced-script injection grammar', () => {
       expect(match!.rule.contentName, tag).toBe(
         `meta.embedded.block.${format}`,
       );
-      expect(match!.rule.patterns, tag).toContainEqual({ include: embedded });
+      expect(match!.rule.patterns, tag).toEqual([{ include: embedded }]);
     }
   });
 

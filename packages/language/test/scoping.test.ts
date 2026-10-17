@@ -126,10 +126,11 @@ async function checkCodeRow(
 }
 
 const BOUNDARY_RULE = {
-  subprocess: 'a goto cannot cross a subprocess boundary.',
+  subprocess: 'note: a goto cannot cross a subprocess boundary',
   handler:
-    "a goto cannot cross an event handler boundary: an event handler's steps run only when its event fires.",
-  host: 'a boundary event attaches to an activity in its own scope.',
+    'note: a goto cannot cross an event handler boundary\n' +
+    "note: an event handler's steps run only when its event fires",
+  host: 'note: a boundary event attaches to an activity in its own scope',
 } as const;
 
 function boundary(
@@ -137,19 +138,20 @@ function boundary(
   where: string,
   rule: keyof typeof BOUNDARY_RULE,
 ): string {
-  return `error: '${name}' is ${where}; ${BOUNDARY_RULE[rule]}`;
+  return `error: '${name}' is ${where}\n${BOUNDARY_RULE[rule]}`;
 }
 
 function missingStep(name: string): string {
-  return `error: No step named '${name}' in this process.`;
+  return `error: no step named '${name}' in this process`;
 }
 
 function missingHost(name: string): string {
-  return `error: No step named '${name}' in this process to attach to.`;
+  return `error: no step named '${name}' in this process to attach to`;
 }
 
 const MULTI_PROCESS =
-  'error: Only one process is supported per file. Move additional processes into separate files.';
+  'error: only one process is supported per file\n' +
+  'help: move additional processes into separate files';
 
 describe('Scoping - process-scoped goto', () => {
   test.each<Row>([
@@ -163,7 +165,8 @@ describe('Scoping - process-scoped goto', () => {
       `process p { parallel { { user A } { user B } } goto A }`,
       [
         'goto A -> p/A:UserTask',
-        "error: 'goto A' jumps into a branch of a 'parallel' statement from outside that branch; a branch's steps run only when the whole 'parallel' statement is reached, not via an external 'goto'.",
+        "error: 'goto A' jumps into a branch of a 'parallel' statement from outside that branch\n" +
+          "note: a branch's steps run only when the whole 'parallel' statement is reached, not through an outside 'goto'",
       ],
     ],
     [
@@ -478,7 +481,7 @@ describe('Scoping - code declarations reached from a code position', () => {
       `process p { user Pack throw error(NOPE) }`,
       [
         'NOPE -> unresolved',
-        `error: 'NOPE' is not declared. Add 'error NOPE' to the process.`,
+        `error: 'NOPE' is not declared\nhelp: add 'error NOPE' to the process`,
       ],
     ],
     [
@@ -486,7 +489,7 @@ describe('Scoping - code declarations reached from a code position', () => {
       `process p { user Pack emit escalation(NOPE) }`,
       [
         'NOPE -> unresolved',
-        `error: 'NOPE' is not declared. Add 'escalation NOPE' to the process.`,
+        `error: 'NOPE' is not declared\nhelp: add 'escalation NOPE' to the process`,
       ],
     ],
     [
@@ -494,7 +497,7 @@ describe('Scoping - code declarations reached from a code position', () => {
       `process p { error CODE(message: "m") user A emit escalation(CODE) user B }`,
       [
         'CODE -> unresolved',
-        `error: 'CODE' is declared as an error, not an escalation.`,
+        `error: 'CODE' is declared as an error, not an escalation`,
       ],
     ],
     [
@@ -502,7 +505,7 @@ describe('Scoping - code declarations reached from a code position', () => {
       `process a { error X(message: "x") user U } process b { user V throw error(X) }`,
       [
         'X -> unresolved',
-        `error: 'X' is not declared. Add 'error X' to the process.`,
+        `error: 'X' is not declared\nhelp: add 'error X' to the process`,
         MULTI_PROCESS,
       ],
     ],
@@ -540,7 +543,7 @@ describe('Scoping - the code slot of an error mapping', () => {
       `process p { service V(topic: "t") { error NOPE when "\${x}" } }`,
       [
         'error NOPE -> unresolved',
-        `error: 'NOPE' is not declared. Add 'error NOPE' to the process.`,
+        `error: 'NOPE' is not declared\nhelp: add 'error NOPE' to the process`,
       ],
     ],
     [
@@ -548,7 +551,7 @@ describe('Scoping - the code slot of an error mapping', () => {
       `process p { escalation E service V(topic: "t") { error E when "\${x}" } }`,
       [
         'error E -> unresolved',
-        `error: 'E' is declared as an escalation, not an error.`,
+        `error: 'E' is declared as an escalation, not an error`,
       ],
     ],
     [
@@ -556,8 +559,8 @@ describe('Scoping - the code slot of an error mapping', () => {
       `process p { escalation E service V(topic: "t") { escalation E when "\${x}" } }`,
       [
         'escalation E -> p/E:CodeDecl',
-        'error: An external task maps a reported failure onto an error and ' +
-          "nothing else; write 'error <Code> when <condition>'.",
+        'error: an external task maps a reported failure onto an error only\n' +
+          "help: write 'error <Code> when <condition>'",
       ],
     ],
   ])('%s', checkCodeRow);

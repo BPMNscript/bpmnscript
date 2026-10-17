@@ -55,14 +55,18 @@ const CORRUPTIONS: [string, (ir: BpmnProcess) => BpmnProcess][] = [
     }),
   ],
   [
-    'stripping the split gateway default flow',
+    'pointing the split gateway default at its conditioned flow',
     (ir) => ({
       ...ir,
-      flowElements: ir.flowElements.map((fe) =>
-        isGateway(fe) && gatewayDefaultFlowId(fe) !== undefined
-          ? { kind: fe.kind, id: fe.id, name: fe.name }
-          : fe,
-      ),
+      flowElements: ir.flowElements.map((fe) => {
+        const declared = isGateway(fe) ? gatewayDefaultFlowId(fe) : undefined;
+        const other = ir.sequenceFlows.find(
+          (sf) => sf.sourceRef === fe.id && sf.id !== declared,
+        );
+        return declared === undefined || other === undefined
+          ? fe
+          : { ...fe, defaultFlowId: other.id };
+      }),
     }),
   ],
 ];

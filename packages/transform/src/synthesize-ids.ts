@@ -4,12 +4,6 @@
  * one breaks round-trip stability.
  */
 
-import {
-  BpmnScriptGrammar,
-  ID_TEXT,
-  reservedWordsOf,
-} from '@bpmn-script/language';
-
 const START_EVENT_PREFIX = 'StartEvent_';
 const END_EVENT_PREFIX = 'EndEvent_';
 export const THROW_EVENT_PREFIX = 'Throw_';
@@ -113,31 +107,21 @@ export function claimId(base: string, taken: Set<string>): string {
   return id;
 }
 
-export function isWritableName(word: string): boolean {
-  return ID_TEXT.test(word) && !reservedWordsOf(BpmnScriptGrammar()).has(word);
-}
-
 /**
- * Claimed in `taken`: codes differing only in punctuation mint the same name,
- * which would make every use site ambiguous.
+ * A name in backticks spells any text on one line, so the preferred name stays
+ * as written. Claimed in `taken`: two codes can prefer one name, which would
+ * make every use site ambiguous.
  */
 export function claimDeclarationName(
   code: string,
   taken: Set<string>,
   preferred?: string,
 ): string {
-  const base =
-    preferred !== undefined && isWritableName(preferred)
-      ? preferred
-      : mintPrintableName(code);
-  return claimId(base, taken);
-}
-
-export function mintPrintableName(text: string): string {
-  const sanitized = isWritableName(text) ? text : text.replace(/\W/g, '_');
-  // Keywords and digit-led words do not lex as `ID`; a leading underscore
-  // fixes both, and no keyword has one.
-  return isWritableName(sanitized) ? sanitized : `_${sanitized}`;
+  const base = [preferred, code].find(
+    (text) => text !== undefined && /^[^\r\n]+$/.test(text),
+  );
+  // Only a code spanning lines has no one-line spelling.
+  return claimId(base ?? code.replace(/[\r\n]+/g, ' '), taken);
 }
 
 export function resolveCollision(base: string, taken: Set<string>): string {

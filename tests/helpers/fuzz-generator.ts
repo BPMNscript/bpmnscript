@@ -1,5 +1,8 @@
 // Fuzz program generator, printer and delta-debugging reducer. Programs are
 // best-effort valid; the harness keeps only validator-clean ones.
+//
+// Loaded outside vitest through Node's type stripping: import only the
+// workspace package `@bpmn-script/language`.
 
 import {
   DECISION_RESULT_MAPPINGS,
@@ -1700,8 +1703,11 @@ export class Generator {
     const items = this.triggerPayload(trigger);
     if ((trigger === 'error' || trigger === 'escalation') && items.length === 0)
       return undefined;
-    if (trigger === 'message' && r.chance(0.5)) {
-      const key = r.pick(['class', 'expression', 'delegate', 'topic']);
+    // An unbound message throw sends nothing and draws a validator warning.
+    if (trigger === 'message') {
+      const key = r.chance(0.5)
+        ? r.pick(['class', 'expression', 'delegate', 'topic'])
+        : 'class';
       items.push({ key, value: this.bindingValue(key) });
     }
     if (r.chance(0.2)) items.push(...this.engineSettings());
@@ -1757,8 +1763,9 @@ export class Generator {
     }
   }
 
+  // As the validator: a block ends only if its last flow statement does.
   private blockTerminates(body: Stmt[]): boolean {
-    return body.some((s) => this.terminates(s));
+    return this.terminates(body.findLast((s) => s.k !== 'on'));
   }
 
   private chain(scope: Scope, processLevel: boolean): Stmt[] {
@@ -1924,6 +1931,13 @@ export class Generator {
       ) {
         continue;
       }
+      // A cancel handler on an attempt nothing gives up never runs, and the
+      // validator and importer both warn about it.
+      if (
+        trigger === 'cancel' &&
+        !body.some((s) => this.cancelEndIn(s, host!.name, false))
+      )
+        continue;
       const scopeKey = host ? `host:${host.name}` : `self`;
       const dupKey = `${scopeKey}|${trigger}|${items[0]?.value ?? ''}`;
       if (scope.usedHandlers.has(dupKey)) continue;
@@ -2022,6 +2036,20 @@ export class Generator {
       body.push(this.simpleTask(scope));
       body.push({ k: 'end', name: this.fresh('Done'), items: [], members: [] });
     }
+  }
+
+  /** Whether attempt `name` holds a cancel end in its own flow, the scope Operaton cancels. */
+  private cancelEndIn(s: Stmt, name: string, inside: boolean): boolean {
+    if (inside && s.k === 'end') return s.trigger === 'cancel';
+    if (s.k === 'sub') {
+      if (s.name === name)
+        return s.body.some((x) => this.cancelEndIn(x, name, true));
+      if (inside) return false;
+    }
+    if (inside && s.k === 'on' && s.host === undefined) return false;
+    return childBlocks(s).some((b) =>
+      b.some((x) => this.cancelEndIn(x, name, inside)),
+    );
   }
 
   private contains(s: Stmt, name: string): boolean {

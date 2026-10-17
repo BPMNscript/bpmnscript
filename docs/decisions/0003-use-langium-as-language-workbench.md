@@ -4,7 +4,7 @@ date: 2026-04-13
 decision-makers: Marlon Kranz
 ---
 
-# Use Langium as Language Workbench
+# Use Langium as the language workbench
 
 ## Context and Problem Statement
 
@@ -31,7 +31,7 @@ Which language workbench should be used to implement the DSL infrastructure?
 
 ## Decision Outcome
 
-Chosen option: "Langium", primarily for its own ergonomics: a smaller, more approachable toolchain than Xtext's, and native access to the existing TypeScript BPMN tooling this project builds on: `bpmn-moddle` to read and write BPMN 2.0 XML, and `bpmn-auto-layout` to generate the Diagram Interchange (DI) data a textual syntax has no coordinate system to produce by hand.
+Chosen option: "Langium", primarily for its own ergonomics: a smaller, more approachable toolchain than Xtext's, and native access to the existing JavaScript BPMN tooling this project builds on: `bpmn-moddle` to read and write BPMN 2.0 XML, and `bpmn-auto-layout` to generate the Diagram Interchange (DI) data a textual syntax has no coordinate system to produce by hand.
 The IDE target followed from this choice rather than preceding it: `langium-cli` generates the AST types and a TextMate grammar from the grammar, the language server builds its parser, completion, scoping and validation on the same grammar at run time, and a one-time project template supplies the VS Code extension that hosts the server.
 That made Visual Studio Code the easier of the two viable targets to reach, whereas an IntelliJ plugin for Xtext would not have benefited from the same path.
 Browser deployment for a future playground was a secondary factor, all within a timeline-feasible learning curve.
@@ -41,7 +41,7 @@ Browser deployment for a future playground was a secondary factor, all within a 
 - Good, because the entire stack is TypeScript, eliminating context-switching between languages
 - Good, because the grammar yields the AST types and syntax highlighting at build time, and the parser, completion, go-to-definition, and diagnostics at run time
 - Good, because the language server can run in a web worker, enabling a browser-based playground with approximately 95% code reuse
-- Good, because `bpmn-moddle` (the standard TypeScript library for BPMN 2.0 XML) integrates naturally
+- Good, because `bpmn-moddle` (the standard JavaScript library for BPMN 2.0 XML) integrates naturally
 - Good, because Langium is actively maintained by TypeFox as an Eclipse Foundation mature project
 - Bad, because Langium has no built-in AST-to-text serializer, requiring a handwritten emitter for the BPMN-to-DSL reverse transformation
 - Bad, because documentation has gaps for advanced topics such as custom scoping patterns

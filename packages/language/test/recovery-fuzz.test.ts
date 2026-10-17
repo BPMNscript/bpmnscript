@@ -9,6 +9,7 @@ import { validationHelper, type ValidationResult } from 'langium/test';
 import type { Model } from '@bpmn-script/language';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 
+import { FENCE } from './helpers/block-hosts.js';
 import { withTextMessages } from './helpers/diagnostics.js';
 
 const SEED = 0x5eed;
@@ -16,8 +17,6 @@ const MUTANTS = 2000;
 
 /** Only catches a runaway: a mutant costs about 0.5ms warm, fifteen times that cold. */
 const TIMEOUT_MS = MUTANTS * 30;
-
-const FENCE = '`' + '`' + '`';
 
 /**
  * Where a slot is only read back through a second construct (a `goto` crossing

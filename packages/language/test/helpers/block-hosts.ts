@@ -109,8 +109,10 @@ export const BLOCK_HOSTS: ReadonlyArray<
   [
     'throw',
     'a throw statement',
-    (c) => `process p { start S throw message("Settled") { ${c} } }`,
-    (i) => `process p { start S throw message("Settled", ${i}) }`,
+    (c) =>
+      `process p { start S throw message("Settled", class: "com.example.Send") { ${c} } }`,
+    (i) =>
+      `process p { start S throw message("Settled", class: "com.example.Send", ${i}) }`,
   ],
   [
     'emit',

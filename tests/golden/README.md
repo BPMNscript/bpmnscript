@@ -59,10 +59,20 @@ Nested shapes stay inside their parent only through the `isExpanded` hint from `
 Per-fixture extras, such as which root elements must be shared or how strictly the restructured DSL is validated, live in the test file.
 `tests/e2e/deploy-sweep.test.ts` deploys every frozen `.bpmn` here, every fixture under `tests/fixtures/`, and every example, on the engine, both as written and rebuilt from its own print; that suite lives outside the pair suites and runs once per file rather than once per pair.
 
+Run the pair tests with `npm test --workspace tests`, or one pair with `npm test --workspace tests -- forms.round-trip.test.ts`.
+
+## Authoring rules
+
+Three rules keep a pair comparable across the round trip.
+
+- Unless a pair says otherwise, a variable read by a condition or an expression is declared as a form field rather than a `var`, so the declaration comes back out of the XML on import; the IR carries no `var` line.
+- Every `throw`, `emit` and link catch is named, so its printed id re-parses unchanged; an unnamed one re-derives a coordinate id that moves when the restructured DSL reorders statements.
+- No label equals the name humanized from its id, because the importer drops a label it can derive and the fixture would come back with it missing.
+
 ## `invoice-approval-handwritten.bpmn`
 
 A BPMN file written by hand to look like real Operaton Modeler output.
-It uses the `operaton:` namespace (`http://operaton.org/schema/1.0/bpmn`) for extension attributes, carries `<bpmn:incoming>` and `<bpmn:outgoing>` children on every flow node in the MIWG style Operaton expects, sets `operaton:historyTimeToLive="P30D"` on the process, and includes a `<bpmndi:BPMNDiagram>` block with hand-picked coordinates.
+It uses the `operaton:` namespace (`http://operaton.org/schema/1.0/bpmn`) for extension attributes, carries `<bpmn:incoming>` and `<bpmn:outgoing>` children on every flow node in the MIWG style, sets `operaton:historyTimeToLive="P30D"` on the process, and includes a `<bpmndi:BPMNDiagram>` block with hand-picked coordinates.
 
 This is the input for the XML to IR direction.
 `packages/transform/test/xml-to-ir.test.ts` parses it and asserts the resulting IR matches the expected invoice-approval IR, covering both the import of a realistic file and the discarding of its diagram data.
@@ -78,7 +88,7 @@ Contract: the process id `invoice-approval`, the userTask ids `ReviewInvoice` an
 ## `bad-service-task-no-binding.bpmn`
 
 A minimal one-process file whose single `<bpmn:serviceTask>` carries no execution binding: no `operaton:class`, `operaton:expression`, `operaton:delegateExpression`, and no external `operaton:type` and `operaton:topic` pair.
-A service task with no execution form cannot be represented, so this is the negative-path fixture: `xmlToIr` must reject it with `UnsupportedServiceTaskFormError`, and `bpmns parse` must exit non-zero.
+A service task with no execution form cannot be represented, so this is the negative-path fixture: `xmlToIr` must reject it with `UnsupportedServiceTaskFormError`, and `bpmns parse` must exit `1`.
 
 ## `structured-control-flow.bpmnscript`
 
@@ -101,28 +111,24 @@ Contract: `isExpanded="true"` on each sub-process, nested children inside their 
 ## `event-handlers.{bpmnscript,bpmn}`
 
 An order-processing narrative exercising the whole try/catch surface in one program: an `error` declaration carrying a message; a second whose code is not a word a name can spell, so the code sits on the declaration as a setting and the handler still refers to it by name; a third nothing raises or catches, which reaches the `.bpmn` as a root of its own; a payment `subprocess` that throws inside an `if`, escalates mid-chain with `emit escalation`, and owns an interrupting `on error` handler with both catch bindings; a process-level non-interrupting `on escalation ... alongside` handler; a catch-all `on error` handler; a terminal `throw escalation`; explicit ids on a throw and an emit with a `goto` targeting the named emit; and a process variable called `message` used in a condition, so the contextual event words coexist with same-named variables.
-The condition variables are declared on the start form so they survive an import-and-back round trip, and each handler opens with an explicit trigger `start` and closes with an explicit `end`.
+Each handler opens with an explicit trigger `start` and closes with an explicit `end`.
 
 Contract: the deduped roots (one per declared code, each carrying its declared name and each error root its message), the shared `errorRef` and `escalationRef`, `isInterrupting="false"` on the `alongside` handler, each handler shape inside its parent's bounds, and every authored id.
 
 ## `event-triggers.{bpmnscript,bpmn}`
 
 An order-fulfilment narrative exercising the remaining trigger set in one program: a process-level `on message("OrderCancelled")` handler; a `subprocess` owning a non-interrupting `on timer("PT2H", alongside)` reminder and a non-interrupting `on condition(stockLevel < 5, alongside)` watchdog reading a declared form variable; an `on signal("OrderFulfilled", alongside)` handler together with a continuing `emit signal Notify("OrderFulfilled")` and a terminal `throw signal Announce("OrderFulfilled")` of the same name; an `on timer(at: "...")` purge on the same sub-process, so one container carries three handlers; and a `var timer: string` read in a service expression, pinning that the timer trigger word coexists with a same-named variable.
-The condition variable is declared on the start form so it survives an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
-
 Contract: the deduped name-keyed roots and their order, the shared `signalRef`, `isInterrupting="false"` on the `alongside` handlers, the single time-child per timer, each handler shape inside its parent's bounds, and every authored id.
 
 ## `compensation.{bpmnscript,bpmn}`
 
 A trip-booking saga exercising the whole undo surface in one program: two sub-processes each owning an `on compensation` undo block (the flight reverses in one step, the hotel through an `if` reading a declared form variable, so the undo logic is more than a single step); an `error` declaration carrying a message and a process-level `on error` handler whose body raises a named `emit compensation Undo` and then continues to notify the traveler; a matching `emit escalation Overspend` in the main flow and a process-level `on escalation` handler that gives up, recording the abandonment and ending its path with a named `throw compensation CancelAll`, for the cross-kind interplay; and a `var compensation: number` read in a service expression, pinning that the compensation word coexists with a same-named variable.
-The `if` variables `seats` and `budget` are declared on the start form so they survive an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
 
 Contract: the absence of any compensation root, the bare compensate definitions, the `triggeredByEvent` undo blocks with interrupting starts, each undo-block shape inside its host's bounds, and every authored id.
 
 ## `boundary-events.{bpmnscript,bpmn}`
 
 A parcel-dispatch narrative exercising the whole attached-handler surface in one program: six of the seven boundary triggers, all but `cancel`, which attaches to an `attempt` block alone and is frozen in the `transactions` pair; interrupting and non-interrupting attachment wherever Operaton permits both; five host kinds, a `user` task, a `class`-bound and a `topic`-bound `service` task, a `script` task, a `subprocess` whose escalation is raised by an `emit escalation` one container down, and a `call`; two hosts carrying two boundaries each, so the layout library has to distribute the attachers along the host's lower edge; an escape chain that rejoins the main flow through `goto`; an escape chain containing an `if`; and a host-less signal handler coexisting with all of them in the same container.
-The `if` and condition variables are declared on the start form so they survive an import-and-back round trip, the escalation is emitted under an explicit id so its printed id re-parses cleanly, and every label differs from the name humanized from its id.
 
 Contract: every `attachedToRef`, `cancelActivity="false"` on each `alongside` boundary, the shared `signalRef` and `escalationRef`, each boundary shape centered on its host's bottom edge, and every authored id.
 
@@ -150,7 +156,7 @@ A motor-claim settlement narrative carrying the flat engine settings, the ones w
 `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`, and `isStartableInTasklist` sit on the process header, `initiator` on the start, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
 Five of the seven keys a user task owns (`assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `priority`) sit together on one task, and `resultVariable` on both a service and a script task.
 `TriageClaim` names its form with `formKey` and `ApprovePayout` with a `formRef` pinned to a version, so both ways of naming a form sit in one artifact on separate tasks, which is the only way they can appear together: Operaton refuses to deploy a user task carrying both.
-The header's `historyTimeToLive` is `P90D` rather than the `P30D` the exporter stamps on a process that wrote none, because the importer reads that value back as unwritten and the fixture would otherwise pin nothing.
+The header's `historyTimeToLive` is `P90D` rather than the `P30D` the exporter stamps on a process that wrote none, because the printer leaves that value out of the script and the fixture would otherwise pin nothing.
 
 Both handler forms are here so the placement rule is pinned in the artifact rather than only in prose.
 A hosted `on ApprovePayout: timer` writes its settings on the boundary event it lowers to, and its `exclusive` on the timer definition as well, since `BpmnParse.parseTimer` locks the timer job from there and the tag's copy reaches only the `asyncAfter` job.
@@ -185,12 +191,11 @@ Contract: the `operaton:executionListener` and `operaton:taskListener` children 
 
 ## `event-positions.{bpmnscript,bpmn}`
 
-An order-dispatch narrative carrying a trigger in the three positions outside a handler in one program: a `start OrderReceived message("OrderReceived", ...)`, so the process is entered by a correlated message rather than by a caller while its start form still renders; an `emit message NotifyWarehouse("WarehouseNotified")` and a terminal `throw message OrderAcknowledged("OrderAcknowledged")`, the continuing and the terminal form of one verb pair; and an `end OrderAbandoned terminate(label: "Abandon every path")` in one branch of an `if`, beside the message end the other branch falls through to.
+An order-dispatch narrative carrying a trigger in the three positions outside a handler in one program: a `start OrderReceived message("OrderReceived", ...)`, so the process is entered by a correlated message rather than by a caller while its start form still renders; an `emit message NotifyWarehouse("WarehouseNotified", ...)` and a terminal `throw message OrderAcknowledged("OrderAcknowledged", ...)`, the continuing and the terminal form of one verb pair; and an `end OrderAbandoned terminate(label: "Abandon every path")` in one branch of an `if`, beside the message end the other branch falls through to.
 The three message names are all distinct, so this artifact pins one derived root per name, where `event-triggers` pins the opposite case of several references collapsing onto one root.
-The condition variable is declared on the start form so it survives an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
 A terminate ends its branch, so the restructured DSL prints that branch as a `goto` onto the named service task instead of as an `if`/`else`; the IR is the same either way, which is what the idempotence block asserts.
 
-Contract: one `bpmn:Message` root per distinct name in first-appearance order (`OrderReceived`, `WarehouseNotified`, `OrderAcknowledged`), the `messageRef` on the start event beside its `operaton:formData`, the `messageRef` on `NotifyWarehouse` and `OrderAcknowledged` with no implementation attribute so Operaton parses them as a none throw and a none end and sends nothing until a send surface exists, the bare `bpmn:terminateEventDefinition` on `OrderAbandoned` with its `name` attribute kept, an import of the frozen artifact that reports no warning at all and so none about that end event's label, and every authored id.
+Contract: one `bpmn:Message` root per distinct name in first-appearance order (`OrderReceived`, `WarehouseNotified`, `OrderAcknowledged`), the `messageRef` on the start event beside its `operaton:formData`, the `messageRef` on `NotifyWarehouse` and `OrderAcknowledged` beside the `operaton:class` each sends through, the bare `bpmn:terminateEventDefinition` on `OrderAbandoned` with its `name` attribute kept, an import of the frozen artifact that reports no warning at all and so none about that end event's label, and every authored id.
 
 ## `task-kinds.{bpmnscript,bpmn}`
 
@@ -219,7 +224,7 @@ A seat-booking narrative whose holding and paying are one block of work that can
 `attempt BookAndPay` holds the seats through an ordinary `subprocess` owning an `on compensation` undo block, charges the card, and issues the tickets; a guard on the declined charge ends that path with `end BookingAbandoned cancel(label: "Give up the booking")`, and `on BookAndPay: cancel` catches it.
 An `on BookAndPay: error` handler sits on the same block, so the artifact pins that a block taking a cancel handler still takes the handlers it always took.
 A second `attempt` block repeats over the seat rows, sets `asyncBefore`, and mentions cancel nowhere, so a block nothing gives up is frozen beside the one that is; it sits inside an ordinary `subprocess`, which nests the two heads inside one another both ways round.
-The guard variable is declared on the start form and the collection the repeat clause names bare is declared in the header, so both survive an import-and-back round trip.
+The collection the repeat clause names bare is declared in the header.
 
 Contract: the `attempt` blocks on `bpmn:transaction` and the ordinary ones on `bpmn:subProcess`; the `bpmn:cancelEventDefinition` on an end event inside the transaction and on a boundary event whose `attachedToRef` names that transaction, both of them bare; the error boundary on the same host; the `triggeredByEvent` undo block nested inside the block a cancel end gives up; `bpmn:multiInstanceLoopCharacteristics` and `operaton:asyncBefore` written on the second transaction tag; every nested shape inside its parent's bounds with both boundary shapes centered on the host's lower edge; and every authored id.
 
@@ -238,8 +243,6 @@ A plain `await` follows the two, so both forms of the keyword are frozen side by
 A race lowers to a `bpmn:eventBasedGateway`, one `bpmn:intermediateCatchEvent` per branch, and a `bpmn:exclusiveGateway` merge, since the first branch to fire cancels the rest and exactly one of them ever runs.
 No flow out of that gateway carries a condition: Operaton builds no transition for one and routes through the event scope instead, so a condition there would be content nothing reads.
 The gateway, its catch events, and the merge are all elided on print, each of them recovered from the `await` block the branches spell out, and a branch's settings are written back on the catch event the engine waits at.
-Every condition reads a field of the start form rather than a `var`, so the declaration comes back out of the XML on the way in.
-
 Contract: two `bpmn:inclusiveGateway` pairs and one `bpmn:parallelGateway` pair, each a `_fork` and a `_join`; exactly one `default` attribute, naming the flow into the `else` branch; one `bpmn:eventBasedGateway` per race, each with one unconditioned flow per catch event and an exclusive merge; and every authored id.
 
 ## `documentation.{bpmnscript,bpmn}`
@@ -264,11 +267,8 @@ Contract: four `bpmn:startEvent` elements, none carrying a `bpmn:incoming`; the 
 ## `link-events.{bpmnscript,bpmn}`
 
 A claim-review narrative carrying a link pair at the process level and a second pair inside a sub-process, in one program: `ReworkMissingReceipts` and `ReworkRejected`, two `emit link` throws raised from an `if`/`else if` chain onto the one catch `AtRework`; `asyncBefore` on `AtRework`, legal on a catch because the engine runs it as an activity while a throw has none; `ToAudit` and `AtAudit` sitting together inside `Settlement`, both ends in one scope as the engine requires; and a catch chain holding an `if`/`else` that rejoins before its `goto` back into the main flow.
-Two authoring rules keep the pair re-parsing under the same ids.
-Every end of a pair is named, because an unnamed catch re-derives a coordinate id that moves when the restructured DSL reorders statements.
 Every chain that precedes a catch ends on an authored `end`, a `goto`, or an `emit link`, because a link catch takes no incoming flow and such an end prints under its reserved id and is refused when read back.
-The label convention `boundary-events` follows above holds here too, and it protects the IR comparison rather than the ids: no label equals the name humanized from its id, so the header reads `process claim-review {` with no label, because the importer drops a name it can derive and a `label: "Claim Review"` would come back missing.
-The condition variables are declared on the start form so they survive an import-and-back round trip.
+The label rule applies to the header too, so it reads `process claim-review {` with no label, since a `label: "Claim Review"` would come back missing.
 An `emit link` inside a guard ends its branch, so the restructured DSL prints the guard as a `goto` onto the throw and the throw itself as a top-level statement after `end Closed`, because an intermediate throw has a chain the printer keeps at its authored scope, where a bare end has none; the IR is the same either way, which is what the idempotence block asserts.
 That order is pinned: `end Closed`, the two `emit link` throws, then `await link AtRework("Rework", asyncBefore: true)` and the rework chain with its `if`/`else` intact, ending in `goto AssessClaim`; inside the sub-process, `end Settled`, `emit link ToAudit("Audit")`, `await link AtAudit("Audit")`, the audit task, and `end Audited`.
 
@@ -280,9 +280,6 @@ A gym-membership narrative carrying every extension a form field takes, spread o
 `Applied`'s form covers a string field with three built-in constraints (`required`, `minlength`, `maxlength`), a date field pinning its `pattern`, an `enum` field naming two labelled values and one bare value beside a `property` line, and a plain boolean default.
 `ConfirmPayment`'s form covers a number field bounded by `min`/`max`, a string field naming a custom `validator` class, a `readonly` string field carrying two `property` lines, and a required boolean field the `if` below reads.
 Every constraint sits on the type its validator accepts, the bounds on a `number` or a `string` field alone and the flags and `validator` on any type, because the engine deploys a mismatch and fails every submission rather than refusing the deployment.
-Two authoring rules keep the pair re-parsing under the same ids.
-Every element label differs from the name humanized from its id, because the importer drops a label it can derive and the fixture would otherwise come back with one missing.
-The `if (confirmed)` condition reads a field declared on the `ConfirmPayment` form rather than a `var`, so the declaration comes back out of the XML on the way in.
 
 Contract: the `(element id, FormField[])` table in `tests/forms.round-trip.test.ts`, asserting `Applied` and `ConfirmPayment` keep every value, constraint, pattern and property at each hop and through import; and the frozen `plan` and `fullName` elements, pinning the child order (properties, validation, values) and that `required` writes with no `config`.
 
@@ -291,10 +288,7 @@ Contract: the `(element id, FormField[])` table in `tests/forms.round-trip.test.
 A card-payment narrative carrying every extra a step handed to an external worker takes, spread over the three task kinds that bind to a topic.
 `ChargeCard` is a `service` task naming a numeric `taskPriority`, two `property` lines the worker fetches with the task, and two `error ... when` mappings in the order they raise; `SendReceipt` is a `send` task naming an expression `taskPriority` and one `property` line; `RateFraud` is a `decide` task naming one mapping, so a mapping outside the service tag is pinned too.
 `PAYMENT_DECLINED` is caught by a handler attached to `ChargeCard` and `GATEWAY_DOWN` by a process-wide one, so the artifact carries a code a handler uses beside one only the mappings raise.
-Three authoring rules keep the pair re-parsing under the same ids.
-Every element label differs from the name humanized from its id, because the importer drops a label it can derive and the fixture would otherwise come back with one missing.
-The `amount` the receipt's priority reads is declared on the start form rather than a `var`, so the declaration comes back out of the XML on the way in.
-Every mapping condition is written structured rather than as a raw `"${...}"` string, since a raw string prints back structured and would change what IR3 compares against.
+Every mapping condition is written structured rather than as a raw `"${...}"` string, since a raw string prints back structured and the IR compared after the round trip would differ.
 
 Contract: the `EXTERNAL_BINDINGS` record in `tests/external-task.round-trip.test.ts`, asserting `ChargeCard`, `SendReceipt` and `RateFraud` keep their priority, properties and error mappings at each hop and through import; and the frozen artifact's `operaton:taskPriority`, `operaton:properties` and `operaton:errorEventDefinition` children, and the two `bpmn:error` roots in first-use order.
 
@@ -306,7 +300,6 @@ The `while` carries `asyncAfter` and a retry cycle, and its body holds a plain `
 The `do ... while` sits inside a sub-process, the one nesting the artifact has, and carries `asyncBefore`, `exclusive: false`, and a priority, since a bare priority or `exclusive` needs the async flag beside it to configure a job at all.
 The first `parallel` weighs nothing, so the pair stays `bpmn:parallelGateway`, and it puts `asyncBefore` on the fork and the other three `join*` keys on the join; the second weighs one branch, so the pair is `bpmn:inclusiveGateway`, and it puts `asyncBefore` and an expression priority on the fork and one key on the join.
 The `await` carries `asyncBefore` and a priority on the head and one `join*` key on the exclusive merge behind it, and never `asyncAfter`, which `BpmnParse.parseEventBasedGateway` refuses to deploy.
-Every condition reads a field of the start form rather than a `var`, so the declaration comes back out of the XML on the way in, and every label differs from the name humanized from its id.
 
 Every job setting in the artifact sits on a gateway, so a direction that moved one onto a neighbouring node would put an attribute where the contract allows none.
 The comparison at each hop keeps a join that carries a setting rather than inlining it as a pass-through the way `tests/helpers/normalize-ir.ts` treats every other synthesized join, because an inlined join takes its settings out of both sides of the comparison at once and a `join*` key one direction dropped would go unseen.
@@ -317,7 +310,6 @@ Contract: the `(gateway id, JobSettings)` record in `tests/gateway-settings.roun
 
 An incident-report narrative binding the two behaviours Operaton builds itself, `type: "mail"` and `type: "shell"`, spread over the three tags that take the binding.
 `RateSeverity` is a `decide` step running a shell command and nothing else, the one field `BpmnParse.validateFieldDeclarationsForShell` requires; `PageOnCall` is a `send` task running a shell command with an argument, the variables its output and exit code land in, and `wait = "true"`, spelled the one way `ShellActivityBehavior.readFields` reads as true; `MailOnCall` is a `service` task naming `to`, `cc`, a `subject` expression, a `text` literal and an `html` expression, so both value slots a field takes sit on one task.
-The two form fields the mail's expressions read are declared on the start form rather than as a `var`, so the declarations come back out of the XML on the way in, and every label differs from the name humanized from its id.
 
 Contract: the `BUILTIN_BINDINGS` record in `tests/mail-and-shell.round-trip.test.ts`, asserting the three tasks keep their type and every field, in order and in its value slot, at each hop and through import; `operaton:type="shell"` on the `bpmn:businessRuleTask` and the `bpmn:sendTask` and `operaton:type="mail"` on the `bpmn:serviceTask`, each with its `operaton:field` children written as a `stringValue` attribute or an `operaton:expression` child; the printed head of each task with its `type` and the field lines beneath it; an import of the frozen artifact that reports no warning at all; and every authored id.
 
@@ -327,12 +319,12 @@ The approve-review loop of an invoice process, the shape every approve-or-rework
 An invoice is approved or sent back for review, and a review that clarifies it goes round again, so the loop is a `do ... while` whose head is the "clarified" decision.
 The split inside the loop body carries a condition on both routes, `approved` leaving the loop by `goto` for the bank transfer and `!approved` staying in it for the review call, and the chain names no `else`.
 The route leaving the loop puts that split's immediate post-dominator outside the loop, so the split has no join of its own, and with no unconditioned route it has no guard clause either; the printer continues it at the loop gateway instead, so the review call prints inside the loop and only the leaving route is a jump.
-The two condition variables are declared as `var` lines, which the IR does not carry, so the restructured DSL' declares them again as `var x: any`, the type a read alone can say.
+The two condition variables are declared as `var` lines, an exception to the form-field rule: the IR does not carry them, so the restructured DSL declares them again as `var x: any`, the type a read alone can say.
 
 The frozen file's split carries a default flow to the join, which the compiled else-less chain gives it and which a hand-drawn original lacks.
 That is why the import-first pin of the modeler's shape, with a condition on every route and no default anywhere, lives in `tests/goto-fallback.round-trip.test.ts` rather than here.
 
-Contract: one `bpmn:exclusiveGateway` split carrying `${approved}`, `${!approved}` and a `default` into the join, that join with two incoming flows, the loop gateway carrying the `${clarified}` back edge into `ApproveInvoice` and a default exit into `InvoiceNotProcessed`; the restructured DSL' printing the `if`/`else if` chain inside the `do` body with the review call inline; an import of the frozen artifact that reports no warning at all; and every authored id.
+Contract: one `bpmn:exclusiveGateway` split carrying `${approved}`, `${!approved}` and a `default` into the join, that join with two incoming flows, the loop gateway carrying the `${clarified}` back edge into `ApproveInvoice` and a default exit into `InvoiceNotProcessed`; the restructured DSL printing the `if`/`else if` chain inside the `do` body with the review call inline; an import of the frozen artifact that reports no warning at all; and every authored id.
 
 ## `unstructured-goto.bpmn`
 

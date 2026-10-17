@@ -1,4 +1,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { astToIr, irToXml } from '@bpmn-script/transform';
 
 import type { ActiveTask, FixtureAdapter } from '../fixtures/index.js';
 import {
@@ -12,11 +17,32 @@ import {
   historicActivities,
   waitForTaskKeys,
   waitForTasks,
+  waitUntilFinished,
 } from '../helpers/engine-rest.js';
+import { parseToAst, validationErrors } from '../helpers/pipeline.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PROCESS_KEY = 'batch-approval';
 
 const EMPTY_KEY = 'empty-batch';
+
+const DOCUMENTED_KEY = 'documented-repetition';
+
+// The engine reads a loop count and a completion condition untrimmed, so the
+// documentation child beside each must leave the value it documents intact.
+const DOCUMENTED_SOURCE = `process ${DOCUMENTED_KEY} {
+  start Opened
+  user Approve for 3(assignee: "demo", countDocumentation: "One approval per board member.")
+  subprocess Lines {
+    input lines = ["ann", "bob", "cal"]
+  } {
+    user Review for each line in lines(assignee: "demo", eachDocumentation: "The line this run reviews.")
+  }
+  user Check for 3 sequentially until (nrOfCompletedInstances >= 2, conditionDocumentation: "Two checks are enough.")(assignee: "demo")
+  end Closed
+}
+`;
 
 describe.skipIf(SKIP)('E2E: repetition on Spring Boot Operaton', () => {
   let fixture: FixtureAdapter;
@@ -158,6 +184,40 @@ describe.skipIf(SKIP)('E2E: repetition on Spring Boot Operaton', () => {
         keys.includes('CloseBatch'),
       ),
     ).toEqual(['CloseBatch']);
+  }, 60_000);
+
+  it('runs a documented count, element variable and completion condition as written', async () => {
+    expect(await validationErrors(DOCUMENTED_SOURCE)).toEqual([]);
+    const xmlPath = resolve(__dirname, `../../out/${DOCUMENTED_KEY}.bpmn`);
+    mkdirSync(dirname(xmlPath), { recursive: true });
+    const xml = await irToXml(astToIr(await parseToAst(DOCUMENTED_SOURCE)));
+    expect(xml.match(/<bpmn:documentation>/g)).toHaveLength(3);
+    writeFileSync(xmlPath, xml);
+    await fixture.deploy(xmlPath, `${DOCUMENTED_KEY}-test`);
+    const { processInstanceId } = await fixture.startProcess(
+      DOCUMENTED_KEY,
+      {},
+    );
+
+    expect(
+      await waitForTaskKeys(
+        fixture,
+        processInstanceId,
+        (keys) => keys.length >= 3,
+      ),
+    ).toEqual(['Approve', 'Approve', 'Approve']);
+    await completeAll(processInstanceId, 'Approve', 3);
+
+    const reviews = await tasksOf(processInstanceId, 'Review', 3);
+    expect(
+      (await Promise.all(reviews.map((task) => boundElement(task.id)))).sort(),
+    ).toEqual(['ann', 'bob', 'cal']);
+    for (const task of reviews) {
+      await fixture.completeTask(task.id);
+    }
+
+    await completeInTurn(processInstanceId, 'Check', 2);
+    expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
   }, 60_000);
 
   it('leaves a repetition of no runs without running it at all', async () => {

@@ -5,7 +5,9 @@
     "outDir": "out",
     "module": "esnext",
     "moduleResolution": "bundler",
-    "noEmit": true
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
   },
   "references": [
     { "path": "../packages/language/tsconfig.src.json" },

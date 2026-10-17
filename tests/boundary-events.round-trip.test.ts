@@ -257,9 +257,31 @@ describeImportFirst(
   IMPORT_FIRST_BPMN,
   (first) => {
     it('prints each boundary as a handler on its host, re-synthesizing host-derived ids with the pairing intact', () => {
-      expect(first.dsl).toContain('on InspectCrate: error(TORN_BOX) {');
-      expect(first.dsl).toContain('on InspectCrate: error(MISSING_ITEM) {');
-      expect(first.dsl).toContain('on StoreCrate: timer("PT1H", alongside) {');
+      expect(first.dsl).toBe(
+        [
+          'process crate-handover {',
+          '  error TORN_BOX',
+          '  error MISSING_ITEM',
+          '  start CrateArrived',
+          '  user InspectCrate(label: "Inspect the crate", assignee: "demo")',
+          '  service StoreCrate(label: "Store the crate", class: "com.example.dispatch.StoreDelegate")',
+          '  end CrateAccepted',
+          '  on InspectCrate: error(TORN_BOX) {',
+          '    service RepackCrate(label: "Repack the crate", class: "com.example.dispatch.RepackDelegate")',
+          '    end CrateRepacked',
+          '  }',
+          '  on InspectCrate: error(MISSING_ITEM) {',
+          '    service ReorderItem(label: "Reorder the missing item", class: "com.example.dispatch.ReorderDelegate")',
+          '    end ItemReordered',
+          '  }',
+          '  on StoreCrate: timer("PT1H", alongside) {',
+          '    service ChaseStorage(label: "Chase the storage team", class: "com.example.dispatch.ChaseDelegate")',
+          '    end StorageChased',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      );
       // The `_2` suffix follows print order.
       expect(boundaryEvents(first.ir).map((b) => b.id)).toEqual([
         'BoxTorn',

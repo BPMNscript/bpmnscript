@@ -4,7 +4,7 @@ date: 2026-06-12
 decision-makers: Marlon Kranz
 ---
 
-# Deterministic ids for synthesized elements, reserved and respelled
+# Deterministic ids for synthesized elements, reserved, and authored ids kept as written
 
 ## Context and Problem Statement
 
@@ -14,7 +14,7 @@ How should these ids be generated, and what does an author's own name have to st
 
 The spelling of an author's id is the other half of the same question.
 A BPMN id is an `xs:ID`, while the script's name slot is the `ID` terminal: letters, digits and `_`, a `-` between them, and no keyword.
-An id such as `Task.1`, `user`, `Review-` or `WFP-6-` (the MIWG reference models) is a legal id the script cannot spell.
+An id such as `Task.1`, `user`, `Review-` or `WFP-6-` (the MIWG reference models) is a legal id the `ID` terminal cannot spell.
 The Modeler names its default start `StartEvent_1`, and 25 of 44 real exported diagrams sampled from public example repositories carry that id, so whatever the validator reserves for a start decides whether a typical Modeler diagram imports intact.
 Renaming such an element is not a fix the user can apply without cost: the engine keys history (`HistoricActivityInstance.getActivityId`), migration plans (`MigrationPlanBuilder.mapActivities`) and a modification (`InstantiationBuilder.startBeforeActivity`) on the activity id.
 
@@ -25,22 +25,24 @@ Renaming such an element is not a fix the user can apply without cost: the engin
 - Sequential counters depend on traversal order, making ids sensitive to unrelated source changes.
 - Ids derived from structural position are self-documenting and survive refactoring of unrelated parts of the process.
 - The import contract ([ADR-0012](0012-honest-bpmn-import.md#decision-outcome)): a document that deploys imports, unless it marks more than one process executable, holds an event without an id that the engine deploys but cannot run, or uses a construct this surface cannot spell, and every change to what runs is reported.
-- An activity id is the key the engine's history and migration match on, so a changed id is a changed process, and the report has to say so.
+- An activity id is the key the engine's history and migration match on, so a changed id is a changed process, and the script has to be able to write every id it has a name slot for.
 - One fact, one home: the shape of a name is the `ID` terminal, and the transform spells it once for both directions.
 
 ## Considered Options
 
-- Structural coordinate: an id derived from the element's position in the process body, with the exact minted ids reserved against author names and an unspellable id respelled on print, matching exactly what the compiler mints so every legal document prints as source that recompiles unchanged
+- Structural coordinate: an id derived from the element's position in the process body, with the exact minted ids reserved against author names, matching exactly what the compiler mints so every legal document prints as source that recompiles unchanged
 - UUIDs, random and non-deterministic
 - A sequential counter, deterministic but traversal-order-sensitive
 - Reserving a `StartEvent_` and `EndEvent_` prefix rather than the exact minted ids, and renaming a Modeler default start on import: one rule for both directions without a per-container lookup, but renaming the one element every Modeler diagram has changes most imports' activity id, and without the rename that start is either dropped from the script with its label and initiator or printed and refused on read-back
 - Refusing every id the script cannot spell: nothing then prints under a name the model does not carry, but the MIWG reference models and any diagram with a dotted or hyphen-terminated id would not import at all, although the engine deploys them
+- Respelling an id the `ID` terminal cannot spell on print, with a warning: every document imports, but the rebuilt document carries the respelled id, so the engine's history and migration APIs no longer know the process, and the only remedy is a rename in the model
+- A second name form in backticks that spells any id the engine deploys: every id with a name slot survives import and rebuild, at the cost of a second spelling for a name and one more terminal in the grammar
 
 ## Decision Outcome
 
-Chosen option: the structural coordinate with exactly reserved names.
+Chosen option: the structural coordinate with exactly reserved names, and a name form in backticks for an authored id the `ID` terminal cannot spell.
 Deriving each id from the element's position in the source makes recompilation reproducible, keeps golden tests stable, and lets a reader trace a synthesized id back to the statement that produced it.
-Reserving the exact forms the compiler mints, and respelling an id the script cannot spell, keeps every document importable while reporting the one change it makes.
+Reserving the exact forms the compiler mints, and writing every other id as it stands, keeps every document importable without changing an id the script has a slot for.
 
 The frozen id templates (from `packages/transform/src/synthesize-ids.ts`):
 
@@ -71,7 +73,7 @@ If a base id is already in the taken set, the resolution appends `_2`, `_3`, and
 Gateway ids skip the `taken`/`resolveCollision` guard, because the position-path scheme never generates the same id twice.
 What collides with them is an author-chosen statement name matching a synthesized-id pattern.
 The `checkReservedNames` validator in `packages/language/src/bpmn-script-validator.ts` rejects such a name at validation time.
-It reserves by prefix `Gateway_*_(split|join|fork|loop|race)`, `Throw_*`, `EventSubProcess_*`, `Boundary_*`, `Catch_*`, and the two-segment `Flow_*_*` form (`/^Flow_.+_.+$/`).
+It reserves by prefix `Gateway_*_(split|join|fork|loop|race)`, `Throw_*`, `EventSubProcess_*`, `Boundary_*`, `Catch_*`, the two-segment `Flow_*_*` form (`/^Flow_.+_.+$/`), and the `*_di` suffix diagram-interchange ids carry.
 Single-segment names such as `Flow_Control` stay legal, because synthesized flow ids occupy only `SequenceFlow.id` and never node names, so they cannot collide.
 For a start and an end it reserves, for each statement, the exact `StartEvent_<c>` and `EndEvent_<c>` of the container `c` whose body holds it: the process, or the nearest `subprocess` or `attempt` block.
 The message says the compiler generates that id for the container's implicit start or end.
@@ -86,14 +88,20 @@ A statement named `default` in an earlier branch of such a split spells that str
 The printer recognizes a minted start or end by the same exact forms, plus `EndEvent_<boundary>` for a boundary in the same container and the `Throw_` prefix an unnamed throw lowers to.
 Only those are left out, since the compiler re-derives them; a start or end under any other id prints with its label, its documentation and its initiator.
 
-The printer builds one map per print, from the process id and every element id that prints, to the name each is written under.
-An id the `ID` terminal accepts maps to itself.
-Any other maps to the id with every non-word character replaced by `_`, a leading `_` where the result would open on a digit or read as a keyword, resolved against every id in the document and every name minted before it.
-Every site that writes an id reads the map: the process head, every statement head, a `goto`, a boundary's host, and a named throw or catch.
-A gateway of any kind, a boundary event, an event sub-process, the catch event of a race branch and a sequence flow have no id slot in the script, so the map leaves them out.
+Every name slot takes the plain `ID` or the `QUOTED_NAME` terminal: any text on one line between backticks, where a backslash takes the next character literally, as in `` user `Task.1` `` or `` goto `end` ``.
+Both carry the bare text, so `` `Review` `` and `Review` are one name to the linker, the duplicate check and every reference.
+The printer writes an id plainly where the `ID` terminal lexes it as no keyword, and in backticks otherwise (`printName` in `packages/language/src/vocabulary.ts`).
+Every site that writes an id goes through it: the process head, every statement head, a `goto`, a boundary's host, and a named throw or catch.
+A gateway of any kind, a boundary event, an event sub-process, the catch event of a race branch and a sequence flow have no id slot in the script.
 Their authored ids do not survive a rebuild: the compiler synthesizes each one from the templates above, and no warning reports it.
 An element with a name slot keeps its id: a task, a sub-process, a start, an end, a single `await`, and a named `throw` or `emit`.
-Each rename draws one `renamedId` warning naming the printed name and saying that the rebuilt document carries it as the activity id.
+
+A name in backticks still becomes an id, so the validator holds a process or statement name to ASCII letters, digits, `_`, `-` and `.`, starting with a letter or `_` (`ENGINE_ID_TEXT`).
+Operaton validates every file against `BPMN20.xsd`, which types an id as `xs:ID` and refuses a space or a leading digit, and moddle-xml drops an element whose id holds any letter beyond ASCII.
+The import refuses a document with an id outside the same set, such as one with a `:`, which moddle-xml reads as a qualified name and the schema refuses.
+The reserved forms above stay reserved in backticks too, because what collides is the id the compiler mints, not its spelling.
+A code declaration's name is the root's `name` attribute rather than an id, so in backticks it takes any text on one line, and import keeps the root's `name` as written.
+A code is referenced inside a trigger's parens, which the grammar parses as an expression, so a name in backticks is read there and refused anywhere else in an expression, since a variable has no backtick form.
 
 An element the document gives no id gets one on import, before anything keys it.
 A sequence flow gets `Flow_<source>_<target>`, and any other element `<Type>_<container>`, from the local name of its BPMN type and the id of the process or sub-process holding it, such as `UserTask_invoice`; both resolve against every id in the document the way the compiler's ids do.
@@ -112,11 +120,11 @@ The engine sets the variable under that exact name (`FormFieldHandler.handleSubm
 - Good, because re-compiling the same source always produces the same BPMN ids, and golden files stay stable across unrelated source changes.
 - Good, because the id scheme is self-documenting: reading a gateway id reveals its position in the source.
 - Good, because `synthesize-ids.ts` is a pure, dependency-free module with its own test suite.
-- Good, because a Modeler default diagram imports, prints and rebuilds with its start's id, label and initiator intact, and a MIWG reference model prints as source that parses and validates, with one report per id it could not keep.
+- Good, because a Modeler default diagram imports, prints and rebuilds with its start's id, label and initiator intact, and a MIWG reference model prints as source that parses, validates and rebuilds with every activity id it carries.
 - Neutral, because the structural coordinate is longer than a UUID, making gateway ids verbose in deep nesting, mitigated by the fact that deeply nested processes are rare in the current scope.
 - Bad, because renaming a process id or reordering top-level statements changes all synthesized ids in that process, which breaks deployed BPMN definitions.
   That is a concern for production use and acceptable for a DSL-authoring workflow where recompile is expected to replace the definition.
-- Bad, because a respelled id is a changed activity id in the rebuilt document, so a process rebuilt from such a script is not the process the history and migration APIs know; the warning says so, and the remedy is a rename in the model.
+- Neutral, because a name has two spellings, and the printer uses backticks only where the plain one cannot spell the id, so a script written by hand rarely shows them.
 - Bad, because an imported gateway, boundary event, event sub-process or race-branch catch comes back under a synthesized id without a warning, and the engine records these in history under their activity id as it does a task.
   A migration plan written against the original document has to map them anew.
 - Bad, because a statement written under another container's minted id, such as `user EndEvent_S` beside `subprocess S`, is legal and makes the compiler mint `EndEvent_S_2` for `S`, which the printer then writes as an ordinary `end EndEvent_S_2`; the round trip stays stable from the second print on, and nothing runs differently.
@@ -125,7 +133,8 @@ The engine sets the variable under that exact name (`FormFieldHandler.handleSubm
 
 `packages/transform/test/synthesize-ids.test.ts` verifies every template, the collision-resolution rule, and the exact predicates for a minted start and end.
 The reserved-name table in `packages/language/test/validating.test.ts` pins the exact rule per container and the freed `StartEvent_1`.
-The respelling table in `packages/transform/test/ir-to-dsl.test.ts` prints every id site under a minted name, asserts the whole warning list, and re-parses and validates the source; the Modeler-default row asserts the printed start, end and initiator with no warning.
+The backtick table in `packages/transform/test/ir-to-dsl.test.ts` prints every id site in backticks with no warning, re-parses and validates the source, and compiles it back to the same ids; the Modeler-default row asserts the printed start, end and initiator with no warning.
+`tests/backtick-names.round-trip.test.ts` imports a document per id the plain form cannot spell, asserts the exact printed script, and compiles it to a document with the same ids and no model difference.
 The refusal matrix in `packages/transform/test/xml-to-ir.test.ts` pins the two import refusals.
 The two id-less tables in the same file pin the minted ids and the id-less events that refuse.
 The round-trip normalizer (`tests/helpers/normalize-ir.ts`) uses the id patterns to re-key synthesized ids before comparing IR snapshots, and the golden pair suites pass unchanged.
@@ -135,4 +144,4 @@ The round-trip normalizer (`tests/helpers/normalize-ir.ts`) uses the id patterns
 The id templates are frozen, because they are consumed by `astToIr`, `irToDsl`, and the round-trip normalizer.
 Any change requires updating all three consumers and regenerating the `invoice-approval-generated.bpmn` golden file.
 The frozen contract is documented in the header of `packages/transform/src/synthesize-ids.ts`, which also holds the exact predicates and the minting scheme.
-The name map is built by `printedNames` in `packages/transform/src/ir-to-dsl.ts`; the per-container check is `checkReservedNames` in `packages/language/src/bpmn-script-validator.ts`; the two import refusals go through `refuseUnspellableVariable` in `packages/transform/src/xml-to-ir.ts`.
+The printed spelling is `printName` in `packages/language/src/vocabulary.ts`; the per-container check is `checkReservedNames` and the id check `checkEngineIds` in `packages/language/src/bpmn-script-validator.ts`; the variable refusals go through `refuseUnspellableVariable` in `packages/transform/src/xml-to-ir.ts`.

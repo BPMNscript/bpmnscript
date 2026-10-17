@@ -4,11 +4,11 @@ date: 2026-04-13
 decision-makers: Marlon Kranz
 ---
 
-# Use Mono-repo Structure
+# Use a mono-repo structure
 
 ## Context and Problem Statement
 
-BPMNscript consists of multiple components: the core language (grammar, parser, AST, validation), a CLI tool, and a VS Code extension.
+BPMNscript consists of multiple components: the core language (grammar, parser, AST, validation), the transform between the language and BPMN XML, a CLI tool, and a VS Code extension.
 Should these components live in a single repository or be split across multiple repositories?
 
 ## Decision Drivers
@@ -20,7 +20,7 @@ Should these components live in a single repository or be split across multiple 
 ## Considered Options
 
 - Mono-repo with npm workspaces
-- Multi-repo (separate repos for core, CLI, VS Code extension)
+- Multi-repo (separate repos for the language, the transform, the CLI and the VS Code extension)
 
 ## Decision Outcome
 

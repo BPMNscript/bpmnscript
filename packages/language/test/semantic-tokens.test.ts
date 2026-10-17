@@ -40,9 +40,16 @@ const SOFT_WORDS_AS_VAR_NAME = [
   'compensation',
   'after',
   'terminate',
+  'fail',
 ];
 
-const SOFT_WORDS_AS_OPERAND = ['priority', 'code', 'compensation', 'after'];
+const SOFT_WORDS_AS_OPERAND = [
+  'priority',
+  'code',
+  'compensation',
+  'after',
+  'fail',
+];
 
 describe('Semantic tokens - soft event words', () => {
   test.each<Row>([
@@ -122,6 +129,13 @@ describe('Semantic tokens - soft event words', () => {
         PLAIN,
         KEYWORD,
       ],
+    ],
+    [
+      "'fail' after 'else' highlights as a keyword on both heads",
+      `var a: boolean
+  if (a) { user A } else <|fail|>
+  parallel { if (a) { user B } if (!a) { user C } else <|fail|> }`,
+      [KEYWORD, KEYWORD],
     ],
     [
       'a soft word as a variable name carries no token, declared or read',

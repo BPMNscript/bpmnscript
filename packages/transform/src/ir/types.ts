@@ -33,7 +33,10 @@ export interface BpmnProcess extends FlowContainer, Named {
   isExecutable: true;
   /** Distinct from the engine's deployment version. */
   versionTag?: string;
-  /** Absent means the exporter's default; see `HISTORY_TIME_TO_LIVE`. */
+  /**
+   * Absent only for an imported process that sets none; the exporter then
+   * writes `HISTORY_TIME_TO_LIVE`.
+   */
   historyTimeToLive?: string;
   /**
    * Comma-separated; stored as written and not checked when an instance starts.
@@ -250,11 +253,14 @@ export type EventDefinition =
       timerKind: TimerKind;
       /** ISO-8601 or EL, verbatim. */
       expression: string;
+      /** The `<bpmn:documentation>` inside the time element. */
+      expressionDocumentation?: string;
     }
   | {
       kind: 'conditional';
       /** Raw `${...}` body. */
       condition: string;
+      conditionDocumentation?: string;
     }
   | {
       kind: 'link';
@@ -373,10 +379,14 @@ export function ioMapped(
  */
 export interface LoopCharacteristics extends Omit<JobSettings, 'jobPriority'> {
   cardinality?: string;
+  cardinalityDocumentation?: string;
   /** A variable name, or an expression when it carries `${`. */
   collection?: string;
   elementVariable?: string;
+  /** Written on a `bpmn:inputDataItem` named after `elementVariable`. */
+  elementVariableDocumentation?: string;
   completionCondition?: string;
+  completionConditionDocumentation?: string;
   /**
    * Serialized as `isSequential`; absent means parallel, the engine default.
    */
@@ -390,7 +400,10 @@ export interface Repeatable {
 export interface Activity extends Repeatable {
   /**
    * BPMN `default` on a step: the engine takes it when no other outgoing
-   * condition held, as on a gateway.
+   * route was taken, as on an inclusive gateway. On a repeated step the routes
+   * leave its multi-instance body instead, and the engine fails every run with
+   * `missingDefaultFlowException`, so the export refuses one there and the
+   * import keeps it only for the printer, which moves it onto a fork.
    */
   defaultFlowId?: string;
 }
@@ -668,10 +681,6 @@ export function gatewayDefaultFlowId(gateway: Gateway): string | undefined {
     case 'parallelGateway':
     case 'eventBasedGateway':
       return undefined;
-    default: {
-      const exhaustive: never = gateway;
-      throw new Error(`Unhandled gateway kind: ${JSON.stringify(exhaustive)}`);
-    }
   }
 }
 
@@ -751,4 +760,5 @@ export interface SequenceFlow {
   targetRef: string;
   /** Includes the wrapper, e.g. `"${amount > 1000}"`. */
   conditionExpression?: string;
+  conditionDocumentation?: string;
 }

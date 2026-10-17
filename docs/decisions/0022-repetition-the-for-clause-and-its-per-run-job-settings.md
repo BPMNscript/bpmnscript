@@ -53,7 +53,7 @@ An element variable is optional with a collection, since `for each in batches` d
 The whole construct is one optional field on the shape the activity nodes already share, so it reaches every kind without adding an arm to any exhaustive switch in the transform.
 
 `runAsyncBefore`, `runAsyncAfter`, `runExclusive`, and `runRetryCycle` sit in the same parens a repeated statement's own five settings already occupy, each spelled by `runSettingKey(key) = prefixedSettingKey('run', key)`, the same function a join gateway's spellings use with a different prefix.
-There is no `runJobPriority`: `createActivityOnScope` reads a job priority off the activity element alone, and `parseActivity` swaps the scope to the multi-instance body before `createActivityOnScope` stores it, so a repeated step's plain `jobPriority` already prices each run's job.
+There is no `runJobPriority`, because `createActivityOnScope` reads a job priority off the activity element alone and a repeated step's plain `jobPriority` already prices each run's job ([ADR-0013](0013-validator-mirrors-parse-time-rules.md)).
 No statement kind that repeats also synthesizes a gateway, so a `run`-prefixed key and a `join`-prefixed key never both sit in one parens.
 
 On the XML side the loop element carries the plain, unprefixed attribute names, since it is already its own element, distinct from the activity's, and only the DSL surface needs a prefix where the step's settings and the loop's share one parens.

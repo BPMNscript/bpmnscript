@@ -1,4 +1,4 @@
-import { type Module, inject } from 'langium';
+import { type Module, createGrammarConfig, inject } from 'langium';
 import {
   createDefaultModule,
   createDefaultSharedModule,
@@ -24,11 +24,17 @@ import { BpmnScriptCompletionProvider } from './bpmn-script-completion.js';
 import { BpmnScriptDocumentValidator } from './bpmn-script-document-validator.js';
 import { BpmnScriptScopeProvider } from './bpmn-script-scope-provider.js';
 import { BpmnScriptLinker } from './bpmn-script-linker.js';
-import { BpmnScriptParserErrorMessageProvider } from './bpmn-script-parser-error-message-provider.js';
+import {
+  BpmnScriptLexerErrorMessageProvider,
+  BpmnScriptParserErrorMessageProvider,
+} from './bpmn-script-parser-error-message-provider.js';
 import { BpmnScriptSemanticTokenProvider } from './bpmn-script-semantic-tokens.js';
 import { BpmnScriptValueConverter } from './bpmn-script-value-converter.js';
 import { BpmnScriptHoverProvider } from './bpmn-script-hover.js';
-import { BpmnScriptReferences } from './bpmn-script-references.js';
+import {
+  BpmnScriptReferences,
+  BpmnScriptRenameProvider,
+} from './bpmn-script-references.js';
 import {
   BpmnScriptDocumentSymbolProvider,
   BpmnScriptNodeKindProvider,
@@ -52,7 +58,13 @@ export const BpmnScriptModule: Module<
   parser: {
     ParserErrorMessageProvider: (services) =>
       new BpmnScriptParserErrorMessageProvider(services),
+    LexerErrorMessageProvider: () => new BpmnScriptLexerErrorMessageProvider(),
     ValueConverter: () => new BpmnScriptValueConverter(),
+    // A caret on a name's opening backtick still names it.
+    GrammarConfig: (services) => ({
+      ...createGrammarConfig(services),
+      nameRegexp: /^[\w\p{L}`]$/u,
+    }),
   },
   references: {
     VariableSymbolProvider: () => new DefaultVariableSymbolProvider(),
@@ -70,6 +82,7 @@ export const BpmnScriptModule: Module<
     SemanticTokenProvider: (services) =>
       new BpmnScriptSemanticTokenProvider(services),
     HoverProvider: (services) => new BpmnScriptHoverProvider(services),
+    RenameProvider: (services) => new BpmnScriptRenameProvider(services),
     DocumentSymbolProvider: (services) =>
       new BpmnScriptDocumentSymbolProvider(services),
   },

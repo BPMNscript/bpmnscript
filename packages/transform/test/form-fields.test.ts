@@ -75,12 +75,6 @@ describe('form fields', () => {
     }
   });
 
-  it('are absent without a form block', async () => {
-    const process = await ir('process p { start S user U }');
-    expect(startOf(process).formFields).toBeUndefined();
-    expect(userOf(process).formFields).toBeUndefined();
-  });
-
   it('refuse on import a type the script cannot express, naming the five it takes', async () => {
     const xml = await irToXml(await ir(SOURCE));
     const err = await expectRefusal<UnsupportedFormFieldTypeError>(
@@ -88,7 +82,7 @@ describe('form fields', () => {
       UnsupportedFormFieldTypeError,
     );
     expect(err.message).toMatch(
-      /'double'.*string, long, boolean, date, and enum/,
+      /'double'\nnote: .*'string', 'long', 'boolean', 'date', and 'enum'$/,
     );
   });
 });

@@ -1,0 +1,29 @@
+// Every route below runs under a condition and `else fail` adds no fallback,
+// so a claim no condition matches stops with the engine's error instead of
+// slipping past the review. The `if` fails as the claim starts, the
+// `parallel` block when the first review is completed.
+
+process claim-routing(label: "Claim routing") {
+  var amount: number
+  var injury: boolean
+
+  start ClaimReceived(label: "Claim received")
+
+  if (amount <= 1000) {
+    user QuickReview(label: "Review the small claim", assignee: "demo")
+  } else if (amount <= 50000) {
+    user FullReview(label: "Review the claim in full", assignee: "demo")
+  } else fail
+
+  parallel {
+    if (injury) {
+      user MedicalCheck(label: "Check the medical report", assignee: "demo")
+    }
+    if (amount > 500) {
+      user FraudCheck(label: "Check the claim for fraud", assignee: "demo")
+    }
+    else fail
+  }
+
+  end ClaimSettled(label: "Claim settled")
+}

@@ -17,6 +17,3 @@
 *.gif binary
 *.woff binary
 *.woff2 binary
-
-# Merge strategy for CHANGELOG
-CHANGELOG.md merge=union

@@ -183,7 +183,18 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '',
       ].join('\n'),
       ['>${myBean.check()}</bpmn:conditionExpression>'],
-      ['  if ("${myBean.check()}") {\n'],
+      [
+        'process bean-cond {',
+        '  start S',
+        '  if ("${myBean.check()}") {',
+        '    user Approve(assignee: "demo")',
+        '  } else {',
+        '    user Reject(assignee: "demo")',
+        '  }',
+        '  end E',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'a backslash inside a JUEL string literal prints as the doubled escape and compiles back to the same three characters',
@@ -196,7 +207,15 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '',
       ].join('\n'),
       ['${region == "a\\\\b"}'],
-      ['if (region == "a\\\\b") {'],
+      [
+        'process order-fulfilment {',
+        '  var region: any',
+        '  if (region == "a\\\\b") {',
+        '    user A',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'an out-of-subset raw condition with a quoted method call keeps its inner quotes, not doubled escapes',
@@ -209,7 +228,14 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '',
       ].join('\n'),
       ['${execution.getVariable("x")}'],
-      [],
+      [
+        'process p {',
+        '  if ("${execution.getVariable(\\"x\\")}") {',
+        '    user A',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'a raw operand under a unary operator splices its body instead of nesting a second ${ }',
@@ -217,7 +243,15 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '\n',
       ),
       ['${!(x)}'],
-      [],
+      [
+        'process p {',
+        '  var x: any',
+        '  if (!(x)) {',
+        '    user A',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'quoted-raw method-call bindings on delegate, expression and assignee keep their inner quotes',
@@ -234,7 +268,14 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         'operaton:expression="${bean.m("a")}"',
         'operaton:assignee="${who("a")}"',
       ],
-      [],
+      [
+        'process p {',
+        '  service S(delegate: "${fn(\\"a\\")}")',
+        '  service T(expression: "${bean.m(\\"a\\")}")',
+        '  user U(assignee: "${who(\\"a\\")}")',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'a bare variable in an io value, a list item or a map entry renders as ${var}, not as its name in text',
@@ -265,7 +306,21 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<operaton:entry key="k3">${true}</operaton:entry>',
         '<operaton:in source="notify_sync" target="y" />',
       ],
-      [],
+      [
+        'process p {',
+        '  var notify_sync: any',
+        '  service A(class: "x") {',
+        '    input b = "${notify_sync.lines}"',
+        '    input c = ["${notify_sync}", "${1}", "${-644}", "s"]',
+        '    input d = { "k": "${notify_sync}", "k2": "${null}", "k3": "${true}" }',
+        '    output a = "${notify_sync}"',
+        '  }',
+        '  call C(process: "x") {',
+        '    in y = notify_sync',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       '#{ } bindings across a listener, tasks and a call activity print verbatim with the # opener kept',
@@ -296,7 +351,6 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<operaton:in sourceExpression="#{order.id}" target="orderId" />',
         '<operaton:out sourceExpression="#{result}" target="subResult" />',
       ],
-      [],
     ],
     [
       'a real line feed, tab or carriage return in an io value, a map key, a field value or a label reaches the engine and prints as its two-character escape',
@@ -316,7 +370,16 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         'key="a\nb"',
         '<operaton:inputParameter name="s">l1\nl2</operaton:inputParameter>',
       ],
-      ['"a\\tb\\rc"', '"f1\\nf2\\tf3\\rf4"', '"l1\\nl2"'],
+      [
+        'process p {',
+        '  service A(label: "a\\tb\\rc", class: "x") {',
+        '    field f = "f1\\nf2\\tf3\\rf4"',
+        '    input m = { "a\\nb": "${1}" }',
+        '    input s = "l1\\nl2"',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'a map key that is itself a template opener prints with a backslash so it re-parses as a literal key, not a raw template',
@@ -333,7 +396,14 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<operaton:entry key="#{other}">${2}</operaton:entry>',
         '<operaton:entry key="plain">${3}</operaton:entry>',
       ],
-      ['"\\${dyn}"', '"\\#{other}"'],
+      [
+        'process p {',
+        '  service A(class: "x") {',
+        '    input m = { "\\${dyn}": "${1}", "\\#{other}": "${2}", "plain": "${3}" }',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'a hyphenated collection variable prints as a bare operaton:collection reference, not a quoted string',
@@ -345,7 +415,6 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '',
       ].join('\n'),
       ['operaton:collection="check-close"'],
-      ['for each in check-close'],
     ],
     [
       'a literal businessKey and a literal in-mapping source print as bare EL text, not a wrapped literal',
@@ -361,7 +430,6 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<operaton:in businessKey="abc" />',
         '<operaton:in sourceExpression="u" target="y" />',
       ],
-      [],
     ],
     [
       'a variable a condition reads comes back declared, so the printed script validates clean',
@@ -374,10 +442,6 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
       ].join('\n'),
       [
         '<bpmn:condition xsi:type="bpmn:tFormalExpression">${419 &gt;= shipPlan}</bpmn:condition>',
-      ],
-      [
-        '  var shipPlan: any\n',
-        '  await condition SendLoad(419 >= shipPlan)\n',
       ],
     ],
     [
@@ -394,7 +458,14 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<bpmn:sequenceFlow id="Flow_FromDesk_EndEvent_claim-review" sourceRef="FromDesk" targetRef="EndEvent_claim-review" />',
         '<bpmn:sequenceFlow id="Flow_WhenUrgent_EndEvent_claim-review" sourceRef="WhenUrgent" targetRef="EndEvent_claim-review" />',
       ],
-      ['  start FromDesk\n  start WhenUrgent condition(urgent)\n}\n'],
+      [
+        'process claim-review {',
+        '  var urgent: any',
+        '  start FromDesk',
+        '  start WhenUrgent condition(urgent)',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'a process-level timer start keeps its date through the round trip',
@@ -407,7 +478,6 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
       [
         '<bpmn:timeDate xsi:type="bpmn:tFormalExpression">2099-01-01T00:00:00</bpmn:timeDate>',
       ],
-      ['  start AuditWindowOpens timer(at: "2099-01-01T00:00:00")\n'],
     ],
     [
       // The looping step reaches no exit, so the container has no post-dominators.
@@ -432,8 +502,20 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<bpmn:sequenceFlow id="Flow_Ship6_Ship6" sourceRef="Ship6" targetRef="Ship6" />',
       ],
       [
-        '    }\n  }\n  decide Ship6(decision: "approve-claim")\n  goto Ship6\n}\n',
-      ],
+        'process claim-review {',
+        '  await {',
+        '    message("OrderReceived") {',
+        '      user Log',
+        '    }',
+        '    condition("${(fn(\\"a\\")) * 0.91 == (247)}") {',
+        '      user Nudge',
+        '    }',
+        '  }',
+        '  decide Ship6(decision: "approve-claim")',
+        '  goto Ship6',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       // The ending branch puts the split's post-dominator at the exit, so the join is read off the routes.
@@ -456,8 +538,19 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<bpmn:sequenceFlow id="Flow_Approve10_Gateway_onboarding_0_join" sourceRef="Approve10" targetRef="Gateway_onboarding_0_join" />',
       ],
       [
-        '  } else if (b) {\n    user Log\n  } else {\n    service Approve10(class: "org.acme.Audit")\n  }\n}\n',
-      ],
+        'process onboarding {',
+        '  var a: any',
+        '  var b: any',
+        '  if (a) {',
+        '    end Done7',
+        '  } else if (b) {',
+        '    user Log',
+        '  } else {',
+        '    service Approve10(class: "org.acme.Audit")',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     ],
     [
       'a loop inside a branch prints inside it, not as a jump with the loop hoisted behind the end',
@@ -468,7 +561,7 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '      await message Wait3("PaymentDone")',
         '    } while (true)',
         '  } else if (true) {',
-        '    throw message("Quote Received")',
+        '    throw signal("Quote Received")',
         '  } else {',
         '    service Escalate(class: "com.example.Delegate")',
         '  }',
@@ -480,9 +573,6 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<bpmn:sequenceFlow id="Flow_Gateway_claim-review_0_t_0_loop_Wait3" name="true" sourceRef="Gateway_claim-review_0_t_0_loop" targetRef="Wait3">',
         '<bpmn:sequenceFlow id="Flow_Gateway_claim-review_0_split_Wait3" name="true" sourceRef="Gateway_claim-review_0_split" targetRef="Wait3">',
       ],
-      [
-        '  if (true) {\n    do {\n      await message Wait3("PaymentDone")\n    } while (true)\n  } else if (true) {\n',
-      ],
     ],
     [
       // Hoisted behind the implicit end as jump targets, the chains would push it off the tail.
@@ -493,7 +583,7 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '  var b: any',
         '  if (a) {',
         '    user A',
-        '    throw message("Quote Received")',
+        '    throw signal("Quote Received")',
         '  } else if (b) {',
         '    user B',
         '    await {',
@@ -515,10 +605,6 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<bpmn:sequenceFlow id="Flow_Catch_p_0_e0_1_b0_Done" sourceRef="Catch_p_0_e0_1_b0" targetRef="Done" />',
         '<bpmn:sequenceFlow id="Flow_Gateway_p_0_join_EndEvent_p" sourceRef="Gateway_p_0_join" targetRef="EndEvent_p" />',
       ],
-      [
-        '  if (a) {\n    user A\n    throw message("Quote Received")\n  } else if (b) {\n    user B\n    await {\n',
-        '  } else {\n    user D\n  }\n}\n',
-      ],
     ],
     [
       // The else route can end at `Done` without passing `X`, so `X` is no merge of the block.
@@ -537,16 +623,13 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '  user C',
         '  end Done',
         '  user X',
-        '  throw message("M")',
+        '  throw signal("M")',
         '}',
         '',
       ].join('\n'),
       [
         '<bpmn:sequenceFlow id="Flow_Gateway_p_0_split_X" name="a" sourceRef="Gateway_p_0_split" targetRef="X">',
         '<bpmn:sequenceFlow id="Flow_Gateway_p_2_split_X" name="b" sourceRef="Gateway_p_2_split" targetRef="X">',
-      ],
-      [
-        '  if (a) {\n    goto X\n  }\n  user B\n  if (b) {\n    goto X\n  }\n  user C\n  end Done\n  user X\n  throw message("M")\n}\n',
       ],
     ],
     [
@@ -565,9 +648,6 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
       ].join('\n'),
       [
         '<bpmn:sequenceFlow id="Flow_Boundary_Hold14_message_Hold14" sourceRef="Boundary_Hold14_message" targetRef="Hold14" />',
-      ],
-      [
-        '  await link("Skip")\n  receive Hold14\n  on Hold14: message("Cancelled") {\n    goto Hold14\n  }\n}\n',
       ],
     ],
     [
@@ -591,19 +671,28 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
         '<bpmn:sequenceFlow id="Flow_Call_EndEvent_invoice_batch" sourceRef="Call" targetRef="EndEvent_invoice_batch" />',
       ],
       [
-        '  await link("Retry")\n  call Call(process: "payment-run")\n  on Check6: condition(order.name != items[0]) {\n    goto Call\n  }\n}\n',
-      ],
+        'process invoice_batch {',
+        '  var items: any',
+        '  var order: any',
+        '  step Check6',
+        '  emit link("Retry")',
+        '  await link("Retry")',
+        '  call Call(process: "payment-run")',
+        '  on Check6: condition(order.name != items[0]) {',
+        '    goto Call',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     ],
-  ] as const)('%s', async (_title, source, xmlContains, dslContains) => {
+  ] as const)('%s', async (_title, source, xmlContains, printed = source) => {
     const { xml1, dsl1, xml2, dsl2 } = await roundTripTwice(source);
 
     const decodedXml = decodeXmlEntities(xml1);
     for (const fragment of xmlContains) {
       expect(decodedXml).toContain(fragment);
     }
-    for (const fragment of dslContains) {
-      expect(dsl1).toContain(fragment);
-    }
+    expect(dsl1).toBe(printed);
 
     const { diagnostics } = await validate(dsl1);
     expect(diagnostics.map((d) => d.message)).toEqual([]);

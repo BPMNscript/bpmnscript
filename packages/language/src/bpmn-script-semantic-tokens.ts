@@ -16,10 +16,12 @@ import {
   isEndEvent,
   isErrorMapping,
   isFormField,
+  isIfStatement,
   isIntermediateCatchEvent,
   isIoParameter,
   isListener,
   isOnHandler,
+  isParallelStatement,
   isRaceBranch,
   isSetting,
   isStartEvent,
@@ -58,6 +60,10 @@ export class BpmnScriptSemanticTokenProvider extends AbstractSemanticTokenProvid
       keyword('event');
       if (node.particle) {
         keyword('particle');
+      }
+    } else if (isIfStatement(node) || isParallelStatement(node)) {
+      if (node.fail !== undefined) {
+        keyword('fail');
       }
     } else if (isErrorMapping(node)) {
       keyword('trigger');

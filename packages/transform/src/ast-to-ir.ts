@@ -82,6 +82,9 @@ import {
   TIMER_PARTICLE_BY_KIND,
   type TimerKind,
   isNamedStatement,
+  DOCUMENTATION_KEY,
+  VALUE_DOCUMENTATION_KEYS,
+  EXPRESSION_ANYWHERE,
 } from '@bpmn-script/language';
 import type {
   Model,
@@ -177,8 +180,9 @@ import {
   makeBoundaryEventId,
   makeIntermediateCatchEventId,
   claimDeclarationName,
-  resolveCollision,
+  claimId,
 } from './synthesize-ids.js';
+import { HISTORY_TIME_TO_LIVE } from './ir-to-xml.js';
 
 /**
  * A `null` `exit` suppresses both the implicit flow to the next sibling and the
@@ -226,20 +230,7 @@ export function astToIr(model: Model): BpmnProcess {
 
   lowerContainerBody(builder, process.body, process.name, process.name);
 
-  const versionTag = processSetting(process, 'versionTag');
-  const historyTimeToLive = processSetting(process, 'historyTimeToLive');
-  const candidateStarterUsers = processSetting(
-    process,
-    'candidateStarterUsers',
-  );
-  const candidateStarterGroups = processSetting(
-    process,
-    'candidateStarterGroups',
-  );
-  const isStartableInTasklist = boolAttrValue(
-    settingsOf(process.items),
-    STARTABLE_KEY,
-  );
+  const settings = settingsOf(process.items);
   const { errorCodes, escalationCodes } = eventIdentities({
     id: process.name,
     flowElements: builder.flowElements,
@@ -255,17 +246,22 @@ export function astToIr(model: Model): BpmnProcess {
     id: process.name,
     ...namedAttrs(process),
     isExecutable: true,
-    ...(versionTag !== undefined ? { versionTag } : {}),
-    ...(historyTimeToLive !== undefined ? { historyTimeToLive } : {}),
-    ...(candidateStarterUsers !== undefined ? { candidateStarterUsers } : {}),
-    ...(candidateStarterGroups !== undefined ? { candidateStarterGroups } : {}),
-    ...(isStartableInTasklist !== undefined ? { isStartableInTasklist } : {}),
+    ...defined({ versionTag: attrValue(settings, 'versionTag') }),
+    historyTimeToLive:
+      attrValue(settings, 'historyTimeToLive') ?? HISTORY_TIME_TO_LIVE,
+    ...defined({
+      candidateStarterUsers: attrValue(settings, 'candidateStarterUsers'),
+      candidateStarterGroups: attrValue(settings, 'candidateStarterGroups'),
+      isStartableInTasklist: boolAttrValue(settings, STARTABLE_KEY),
+    }),
     flowElements: builder.flowElements,
     sequenceFlows: builder.sequenceFlows,
     ...(errorDecls.length > 0 ? { errorDecls } : {}),
     ...(escalationDecls.length > 0 ? { escalationDecls } : {}),
   };
 }
+
+type CodeDecls = Required<Pick<BpmnProcess, 'errorDecls' | 'escalationDecls'>>;
 
 interface DeclaredCode {
   name?: string;
@@ -283,10 +279,7 @@ function collectCodeDecls(
   process: Process,
   usedErrorCodes: ReadonlySet<string>,
   usedEscalationCodes: ReadonlySet<string>,
-): {
-  errorDecls: { name: string; code: string; message?: string }[];
-  escalationDecls: { name: string; code: string }[];
-} {
+): CodeDecls {
   const errors = new Map<string, DeclaredCode>();
   const escalations = new Map<string, DeclaredCode>();
   for (const decl of process.decls) {
@@ -319,7 +312,7 @@ function collectCodeDecls(
   const errorDecls = canonical(usedErrorCodes, errors).map((d) => ({
     name: claimDeclarationName(d.code, taken, d.name),
     code: d.code,
-    ...(d.message !== undefined ? { message: d.message } : {}),
+    ...defined({ message: d.message }),
   }));
   const escalationDecls = canonical(usedEscalationCodes, escalations).map(
     (d) => ({
@@ -336,7 +329,7 @@ function lowerContainerBody(
   coord: string,
   containerId: string,
 ): void {
-  const body = lowerBlockStatements(builder, statements, coord);
+  const body = lowerBlock(builder, statements, coord);
 
   if (body.entry !== null) {
     const firstIsExplicitStart =
@@ -370,9 +363,10 @@ function lowerContainerBody(
  * After a `null` exit later statements are still lowered (they may be jump
  * targets), but no implicit flow bridges the gap. A `start` takes no incoming
  * flow and does not consume the waiting exit, so back-to-back starts all enter
- * the next step.
+ * the next step. A branch's `coord` carries its segment (`<X>_t`, `<X>_e`,
+ * `<X>_b<i>`); each statement's coordinate appends its index.
  */
-function lowerBlockStatements(
+function lowerBlock(
   builder: Builder,
   statements: Statement[],
   coord: string,
@@ -383,17 +377,18 @@ function lowerBlockStatements(
   let waitingStarts: string[] = [];
 
   statements.forEach((stmt, index) => {
+    const x = `${coord}_${index}`;
     if (isOnHandler(stmt)) {
       if (stmt.host !== undefined) {
         // As in `lowerGoto`, `$refText` survives an unresolved host.
-        lowerBoundaryHandler(builder, stmt, stmt.host.$refText, coord, index);
+        lowerBoundaryHandler(builder, stmt, stmt.host.$refText, x);
       } else {
-        lowerOnHandler(builder, stmt, coord, index);
+        lowerOnHandler(builder, stmt, x);
       }
       return;
     }
 
-    const frontier = lowerStatement(builder, stmt, coord, index);
+    const frontier = lowerStatement(builder, stmt, x);
     const stmtEntry = frontier.entry!;
 
     if (entry === null) {
@@ -421,24 +416,15 @@ function lowerBlockStatements(
   return {
     entry,
     exit,
-    ...(exitFlowId !== undefined ? { exitFlowId } : {}),
+    ...defined({ exitFlowId }),
     ...(waitingStarts.length > 0 ? { waitingStarts } : {}),
   };
-}
-
-/**
- * The caller's `coord` carries the branch segment (`<X>_t`, `<X>_e`,
- * `<X>_b<i>`).
- */
-function lowerBlock(builder: Builder, block: Block, coord: string): Frontier {
-  return lowerBlockStatements(builder, block.statements, coord);
 }
 
 function lowerStatement(
   builder: Builder,
   stmt: Statement,
-  coord: string,
-  index: number,
+  x: string,
 ): Frontier {
   if (isStartEvent(stmt)) {
     return lowerStartEvent(builder, stmt);
@@ -450,55 +436,55 @@ function lowerStatement(
     return lowerUserTask(builder, stmt);
   }
   if (isServiceTask(stmt)) {
-    return lowerServiceTask(builder, stmt);
+    return lowerServiceTaskLike(builder, stmt);
   }
   if (isGenericTask(stmt)) {
     return lowerGenericTask(builder, stmt);
   }
   if (isSendTask(stmt)) {
-    return lowerSendTask(builder, stmt);
+    return lowerServiceTaskLike(builder, stmt, 'send');
   }
   if (isReceiveTask(stmt)) {
     return lowerReceiveTask(builder, stmt);
   }
   if (isBusinessRuleTask(stmt)) {
-    return lowerBusinessRuleTask(builder, stmt);
+    return lowerServiceTaskLike(builder, stmt, 'businessRule');
   }
   if (isScriptTask(stmt)) {
     return lowerScriptTask(builder, stmt);
   }
   if (isIfStatement(stmt)) {
-    return lowerIf(builder, stmt, `${coord}_${index}`);
+    return lowerIf(builder, stmt, x);
   }
   if (isWhileStatement(stmt)) {
-    return lowerWhile(builder, stmt, `${coord}_${index}`);
+    return lowerWhile(builder, stmt, x);
   }
   if (isDoWhileStatement(stmt)) {
-    return lowerDoWhile(builder, stmt, `${coord}_${index}`);
+    return lowerDoWhile(builder, stmt, x);
   }
   if (isParallelStatement(stmt)) {
-    return lowerParallel(builder, stmt, `${coord}_${index}`);
+    return lowerParallel(builder, stmt, x);
   }
   if (isRaceStatement(stmt)) {
-    return lowerRace(builder, stmt, `${coord}_${index}`);
+    return lowerRace(builder, stmt, x);
   }
   if (isGotoStatement(stmt)) {
     return lowerGoto(stmt);
   }
   if (isSubProcess(stmt)) {
-    return lowerSubProcess(builder, stmt, `${coord}_${index}`);
+    return lowerSubProcess(builder, stmt, x);
   }
   if (isCallActivity(stmt)) {
     return lowerCallActivity(builder, stmt);
   }
   if (isThrowStatement(stmt)) {
-    return lowerThrow(builder, stmt, coord, index);
+    return lowerThrow(builder, stmt, x);
   }
   if (isEmitStatement(stmt)) {
-    return lowerEmit(builder, stmt, coord, index);
+    return lowerEmit(builder, stmt, x);
   }
   if (isIntermediateCatchEvent(stmt)) {
-    return lowerIntermediateCatch(builder, stmt, coord, index);
+    return lowerIntermediateCatch(builder, stmt, x);
   }
   throw new Error(
     `astToIr: unexpected statement type '${(stmt as { $type: string }).$type}'.`,
@@ -506,16 +492,15 @@ function lowerStatement(
 }
 
 function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
-  const formFields = lowerFormFields(stmt);
-  const eventDefinition = startEventDefinition(stmt);
-  const initiator = attrValue(settingsOf(stmt.items), 'initiator');
   builder.flowElements.push({
     kind: 'startEvent',
     id: stmt.name,
     ...namedAttrs(stmt),
-    ...(formFields !== undefined ? { formFields } : {}),
-    ...(eventDefinition !== undefined ? { eventDefinition } : {}),
-    ...(initiator !== undefined ? { initiator } : {}),
+    ...defined({
+      formFields: lowerFormFields(stmt),
+      eventDefinition: startEventDefinition(stmt),
+      initiator: attrValue(settingsOf(stmt.items), 'initiator'),
+    }),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
@@ -551,12 +536,11 @@ function endEventDefinition(
 }
 
 function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
-  const eventDefinition = endEventDefinition(stmt.trigger);
   builder.flowElements.push({
     kind: 'endEvent',
     id: stmt.name,
     ...namedAttrs(stmt),
-    ...(eventDefinition !== undefined ? { eventDefinition } : {}),
+    ...defined({ eventDefinition: endEventDefinition(stmt.trigger) }),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: null };
@@ -564,30 +548,22 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
 
 function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
   const settings = settingsOf(stmt.items);
-  const assignee = attrValue(settings, 'assignee');
-  const formKey = attrValue(settings, 'formKey');
-  const formRef = readFormRef(settings);
-  const formFields = lowerFormFields(stmt);
-  const candidateGroups = attrValue(settings, 'candidateGroups');
-  const candidateUsers = attrValue(settings, 'candidateUsers');
-  const dueDate = attrValue(settings, 'dueDate');
-  const followUpDate = attrValue(settings, 'followUpDate');
-  const priority = numericOrElAttrValue(settings, 'priority');
-  const taskListeners = readTaskListeners(stmt.listeners);
   builder.flowElements.push({
     kind: 'userTask',
     id: stmt.name,
     ...namedAttrs(stmt),
-    ...(assignee !== undefined ? { assignee } : {}),
-    ...(formKey !== undefined ? { formKey } : {}),
-    ...(formRef !== undefined ? { formRef } : {}),
-    ...(formFields !== undefined ? { formFields } : {}),
-    ...(candidateGroups !== undefined ? { candidateGroups } : {}),
-    ...(candidateUsers !== undefined ? { candidateUsers } : {}),
-    ...(dueDate !== undefined ? { dueDate } : {}),
-    ...(followUpDate !== undefined ? { followUpDate } : {}),
-    ...(priority !== undefined ? { priority } : {}),
-    ...(taskListeners !== undefined ? { taskListeners } : {}),
+    ...defined({
+      assignee: attrValue(settings, 'assignee'),
+      formKey: attrValue(settings, 'formKey'),
+      formRef: readFormRef(settings),
+      formFields: lowerFormFields(stmt),
+      candidateGroups: attrValue(settings, 'candidateGroups'),
+      candidateUsers: attrValue(settings, 'candidateUsers'),
+      dueDate: attrValue(settings, 'dueDate'),
+      followUpDate: attrValue(settings, 'followUpDate'),
+      priority: numericOrElAttrValue(settings, 'priority'),
+      taskListeners: readTaskListeners(stmt.listeners),
+    }),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
@@ -619,24 +595,25 @@ function lowerFormFields(
 
 function lowerFormField(f: AstFormField): FormField {
   const settings = settingsOf(f.items);
-  const datePattern = attrValue(settings, DATE_PATTERN_KEY);
   const constraints = readFormFieldConstraints(settings);
   const values: FormFieldValue[] = f.values.map((v) => ({
     id: v.id,
-    ...(v.label !== undefined ? { label: v.label } : {}),
+    ...defined({ label: v.label }),
   }));
-  const properties = readExtensionProperties(f.params);
   return {
     id: f.id,
     type: toFormFieldType(f.type),
-    ...(f.label !== undefined ? { label: f.label } : {}),
-    ...(f.defaultValue !== undefined
-      ? { defaultValue: renderFormDefault(f.defaultValue) }
-      : {}),
-    ...(datePattern !== undefined ? { datePattern } : {}),
+    ...defined({
+      label: f.label,
+      defaultValue:
+        f.defaultValue === undefined
+          ? undefined
+          : renderFormDefault(f.defaultValue),
+      datePattern: attrValue(settings, DATE_PATTERN_KEY),
+    }),
     ...(values.length > 0 ? { values } : {}),
     ...(constraints.length > 0 ? { constraints } : {}),
-    ...(properties !== undefined ? { properties } : {}),
+    ...defined({ properties: readExtensionProperties(f.params) }),
   };
 }
 
@@ -699,10 +676,13 @@ function renderFormDefault(expr: Expr): string {
 function lowerServiceTaskLike(
   builder: Builder,
   stmt: AstServiceTask | AstSendTask | AstBusinessRuleTask,
-  binding: ServiceTaskBinding,
   element?: IrServiceTask['element'],
 ): Frontier {
-  const resultVariable = attrValue(settingsOf(stmt.items), 'resultVariable');
+  const settings = settingsOf(stmt.items);
+  const binding =
+    element === 'businessRule'
+      ? businessRuleBinding(settings)
+      : serviceTaskBinding(settings);
   builder.flowElements.push({
     kind: 'serviceTask',
     id: stmt.name,
@@ -713,21 +693,15 @@ function lowerServiceTaskLike(
         : binding.kind === 'decision'
           ? binding
           : withDeclaredFields(binding, stmt.params),
-    ...(resultVariable !== undefined ? { resultVariable } : {}),
-    ...(element !== undefined ? { element } : {}),
+    ...defined({
+      resultVariable: attrValue(settings, 'resultVariable'),
+      element,
+    }),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
-}
-
-function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
-  return lowerServiceTaskLike(
-    builder,
-    stmt,
-    serviceTaskBinding(settingsOf(stmt.items)),
-  );
 }
 
 function codeBinding(attrs: KeyValueAttr[]): CodeBinding | undefined {
@@ -788,39 +762,17 @@ function lowerGenericTask(builder: Builder, stmt: AstGenericTask): Frontier {
   return { entry: stmt.name, exit: stmt.name };
 }
 
-function lowerSendTask(builder: Builder, stmt: AstSendTask): Frontier {
-  return lowerServiceTaskLike(
-    builder,
-    stmt,
-    serviceTaskBinding(settingsOf(stmt.items)),
-    'send',
-  );
-}
-
 function lowerReceiveTask(builder: Builder, stmt: AstReceiveTask): Frontier {
-  const messageName = attrValue(settingsOf(stmt.items), 'message');
   builder.flowElements.push({
     kind: 'receiveTask',
     id: stmt.name,
     ...namedAttrs(stmt),
-    ...(messageName !== undefined ? { messageName } : {}),
+    ...defined({ messageName: attrValue(settingsOf(stmt.items), 'message') }),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
-}
-
-function lowerBusinessRuleTask(
-  builder: Builder,
-  stmt: AstBusinessRuleTask,
-): Frontier {
-  return lowerServiceTaskLike(
-    builder,
-    stmt,
-    businessRuleBinding(settingsOf(stmt.items)),
-    'businessRule',
-  );
 }
 
 /** Without `decision` the block reads as a service task's. */
@@ -829,15 +781,15 @@ function businessRuleBinding(attrs: KeyValueAttr[]): ServiceTaskBinding {
   if (decisionRef === undefined) {
     return serviceTaskBinding(attrs);
   }
-  const binding = versionBinding(attrs);
   const mapping = attrValue(attrs, 'mapDecisionResult');
-  const mapDecisionResult =
-    mapping === undefined ? undefined : toDecisionResultMapping(mapping);
   return {
     kind: 'decision',
     decisionRef,
-    ...(binding !== undefined ? { binding } : {}),
-    ...(mapDecisionResult !== undefined ? { mapDecisionResult } : {}),
+    ...defined({
+      binding: versionBinding(attrs),
+      mapDecisionResult:
+        mapping === undefined ? undefined : toDecisionResultMapping(mapping),
+    }),
   };
 }
 
@@ -853,14 +805,15 @@ function toDecisionResultMapping(mapping: string) {
 
 function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
   const { tag, code } = splitFencedScript(stmt.body);
-  const resultVariable = attrValue(settingsOf(stmt.items), 'resultVariable');
   builder.flowElements.push({
     kind: 'scriptTask',
     id: stmt.name,
     ...namedAttrs(stmt),
     format: scriptFormatOf(tag) ?? tag,
     code,
-    ...(resultVariable !== undefined ? { resultVariable } : {}),
+    ...defined({
+      resultVariable: attrValue(settingsOf(stmt.items), 'resultVariable'),
+    }),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
@@ -871,18 +824,23 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
 /**
  * One split for the whole chain, so an `else if` head takes no settings. The
  * `else` (or the fall-through standing in for it) is the default flow and
- * never conditioned: Operaton rejects a conditioned default.
+ * never conditioned: Operaton rejects a conditioned default. `else fail` has
+ * none, so `ExclusiveGatewayActivityBehavior.doLeave` throws when no condition
+ * holds.
  */
 function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
   const splitId = makeGatewaySplitId(x);
   const joinId = makeGatewayJoinId(x);
   const settings = settingsOf(stmt.items);
-  const defaultFlowId = reserveDefaultFlowId(builder, splitId);
+  const defaultFlowId =
+    stmt.fail === undefined
+      ? reserveDefaultFlowId(builder, splitId)
+      : undefined;
 
   builder.flowElements.push({
     kind: 'exclusiveGateway',
     id: splitId,
-    defaultFlowId,
+    ...defined({ defaultFlowId }),
     ...readJobSettings(settings),
   });
   builder.flowElements.push({
@@ -897,12 +855,12 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
       {
         block: stmt.then,
         coord: `${x}_t`,
-        condition: renderExpression(stmt.condition),
+        condition: flowCondition(stmt),
       },
       ...stmt.elseIfs.map((ei, i) => ({
         block: ei.body,
         coord: `${x}_e${i}`,
-        condition: renderExpression(ei.condition),
+        condition: flowCondition(ei),
       })),
       ...(stmt.elseBlock !== undefined
         ? [{ block: stmt.elseBlock, coord: `${x}_e`, flowId: defaultFlowId }]
@@ -919,7 +877,7 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
 interface ForkBranch {
   block: Block;
   coord: string;
-  condition?: string;
+  condition?: FlowCondition;
   /** Forces the flow's id, marking this branch as the gateway's default. */
   flowId?: string;
 }
@@ -936,7 +894,7 @@ function lowerForkBranches(
   defaultFlowId?: string,
 ): void {
   for (const branch of branches) {
-    const lowered = lowerBlock(builder, branch.block, branch.coord);
+    const lowered = lowerBlock(builder, branch.block.statements, branch.coord);
     addFlow(
       builder,
       sourceId,
@@ -970,8 +928,8 @@ function lowerWhile(
     ...readJobSettings(settingsOf(stmt.items)),
   });
 
-  const condition = renderExpression(stmt.condition);
-  const body = lowerBlock(builder, stmt.body, x);
+  const condition = flowCondition(stmt);
+  const body = lowerBlock(builder, stmt.body.statements, x);
 
   if (body.entry !== null) {
     addFlow(builder, loopId, body.entry, condition);
@@ -991,8 +949,8 @@ function lowerDoWhile(
   const loopId = makeGatewayLoopId(x);
   const defaultFlowId = reserveDefaultFlowId(builder, loopId);
 
-  const condition = renderExpression(stmt.condition);
-  const body = lowerBlock(builder, stmt.body, x);
+  const condition = flowCondition(stmt);
+  const body = lowerBlock(builder, stmt.body.statements, x);
 
   builder.flowElements.push({
     kind: 'exclusiveGateway',
@@ -1020,8 +978,9 @@ function lowerDoWhile(
  * parallel gateway. The engine takes an inclusive default only when no other
  * flow was, and an unconditioned flow always is, so the fork gets a default
  * only onto an `else` or, when every branch is conditioned, to the join
- * (without it the first time no condition holds is a stuck execution). For the
- * same reason an `else` alone does not make the fork inclusive.
+ * (without it the first time no condition holds is a stuck execution, which is
+ * what `else fail` asks for). For the same reason an `else` alone does not make
+ * the fork inclusive.
  */
 function lowerParallel(
   builder: Builder,
@@ -1038,18 +997,18 @@ function lowerParallel(
   const fallback =
     inclusive &&
     (stmt.branches.some((b) => b.otherwise) ||
-      stmt.branches.every((b) => b.condition !== undefined));
+      (stmt.fail === undefined &&
+        stmt.branches.every((b) => b.condition !== undefined)));
 
   // An idle claim would rename an authored collider for nothing.
-  let defaultFlowId: string | undefined;
-  if (fallback) {
-    defaultFlowId = reserveDefaultFlowId(builder, forkId);
-  }
+  const defaultFlowId = fallback
+    ? reserveDefaultFlowId(builder, forkId)
+    : undefined;
   if (inclusive) {
     builder.flowElements.push({
       kind: 'inclusiveGateway',
       id: forkId,
-      ...(defaultFlowId === undefined ? {} : { defaultFlowId }),
+      ...defined({ defaultFlowId }),
       ...fork,
     });
     builder.flowElements.push({
@@ -1071,7 +1030,7 @@ function lowerParallel(
     block: branch.body,
     coord: `${x}_b${i}`,
     ...(branch.condition !== undefined
-      ? { condition: renderExpression(branch.condition) }
+      ? { condition: flowCondition({ ...branch, condition: branch.condition }) }
       : {}),
     ...(i === defaultIndex ? { flowId: defaultFlowId } : {}),
   }));
@@ -1114,7 +1073,7 @@ function lowerRace(builder: Builder, stmt: RaceStatement, x: string): Frontier {
     });
     addFlow(builder, raceId, catchId);
 
-    const lowered = lowerBlock(builder, branch.body, coord);
+    const lowered = lowerBlock(builder, branch.body.statements, coord);
     addFlow(builder, catchId, lowered.entry ?? joinId);
     joinContinuation(builder, lowered, joinId);
   });
@@ -1148,13 +1107,7 @@ function lowerSubProcess(
  * Settings land on the sub-process, except the timer-job ones, which the
  * engine reads only off the start event that declares the timer.
  */
-function lowerOnHandler(
-  builder: Builder,
-  stmt: OnHandler,
-  coord: string,
-  index: number,
-): void {
-  const x = `${coord}_${index}`;
+function lowerOnHandler(builder: Builder, stmt: OnHandler, x: string): void {
   const id = makeEventSubProcessId(x);
 
   const nested = nestedBuilder(builder);
@@ -1194,8 +1147,7 @@ function lowerBoundaryHandler(
   builder: Builder,
   stmt: OnHandler,
   hostId: string,
-  coord: string,
-  index: number,
+  x: string,
 ): void {
   const id = makeBoundaryEventId(hostId, stmt.trigger, builder.taken);
   builder.flowElements.push({
@@ -1207,11 +1159,7 @@ function lowerBoundaryHandler(
     ...readEngineAttributes(stmt),
   });
 
-  const body = lowerBlockStatements(
-    builder,
-    stmt.body.statements,
-    `${coord}_${index}`,
-  );
+  const body = lowerBlock(builder, stmt.body.statements, x);
   if (body.entry !== null) {
     addFlow(builder, id, body.entry);
   }
@@ -1256,37 +1204,28 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
     case 'timer':
     case 'condition':
       return namedTriggerDefinition(trigger, stmt);
-    case 'escalation': {
-      const codeVariable = bindingVariable(stmt, 'code');
-      const code = raisedCodeOf(stmt.items);
+    case 'escalation':
       return {
         kind: 'escalation',
-        ...(code !== undefined ? { escalationCode: code } : {}),
-        ...(codeVariable !== undefined ? { codeVariable } : {}),
+        ...defined({
+          escalationCode: raisedCodeOf(stmt.items),
+          codeVariable: bindingVariable(stmt, 'code'),
+        }),
       };
-    }
     case 'compensation':
       return { kind: 'compensation' };
     case 'cancel':
       return { kind: 'cancel' };
     case 'error':
-    case undefined: {
-      const codeVariable = bindingVariable(stmt, 'code');
-      const messageVariable = bindingVariable(stmt, 'message');
-      const code = raisedCodeOf(stmt.items);
+    case undefined:
       return {
         kind: 'error',
-        ...(code !== undefined ? { errorCode: code } : {}),
-        ...(codeVariable !== undefined ? { codeVariable } : {}),
-        ...(messageVariable !== undefined ? { messageVariable } : {}),
+        ...defined({
+          errorCode: raisedCodeOf(stmt.items),
+          codeVariable: bindingVariable(stmt, 'code'),
+          messageVariable: bindingVariable(stmt, 'message'),
+        }),
       };
-    }
-    default: {
-      const exhaustive: never = trigger;
-      throw new Error(
-        `astToIr: unhandled handler trigger: ${JSON.stringify(exhaustive)}`,
-      );
-    }
   }
 }
 
@@ -1306,10 +1245,9 @@ function bindingVariable(stmt: OnHandler, field: string): string | undefined {
 function lowerThrow(
   builder: Builder,
   stmt: ThrowStatement,
-  coord: string,
-  index: number,
+  x: string,
 ): Frontier {
-  const id = stmt.name ?? makeThrowEventId(`${coord}_${index}`);
+  const id = stmt.name ?? makeThrowEventId(x);
   const eventDefinition = throwEventDefinition(stmt);
   builder.flowElements.push({
     kind: 'endEvent',
@@ -1336,13 +1274,8 @@ function thrownMessageBinding(
  * A link ends the chain: `BpmnParse.parseSequenceFlow` refuses a flow out of a
  * link throw.
  */
-function lowerEmit(
-  builder: Builder,
-  stmt: EmitStatement,
-  coord: string,
-  index: number,
-): Frontier {
-  const id = stmt.name ?? makeThrowEventId(`${coord}_${index}`);
+function lowerEmit(builder: Builder, stmt: EmitStatement, x: string): Frontier {
+  const id = stmt.name ?? makeThrowEventId(x);
   const eventDefinition = emitEventDefinition(stmt);
   builder.flowElements.push({
     kind: 'intermediateThrowEvent',
@@ -1375,22 +1308,15 @@ function emitEventDefinition(stmt: EmitStatement): EmitEventDefinition {
     case 'escalation':
     case undefined:
       return { kind: 'escalation', escalationCode: code };
-    default: {
-      const exhaustive: never = trigger;
-      throw new Error(
-        `astToIr: unhandled emit trigger: ${JSON.stringify(exhaustive)}`,
-      );
-    }
   }
 }
 
 function lowerIntermediateCatch(
   builder: Builder,
   stmt: IntermediateCatchEvent,
-  coord: string,
-  index: number,
+  x: string,
 ): Frontier {
-  const id = stmt.name ?? makeIntermediateCatchEventId(`${coord}_${index}`);
+  const id = stmt.name ?? makeIntermediateCatchEventId(x);
   builder.flowElements.push({
     kind: 'intermediateCatchEvent',
     id,
@@ -1415,12 +1341,6 @@ function throwEventDefinition(stmt: ThrowStatement): EndEventDefinition {
     case 'error':
     case undefined:
       return { kind: 'error', errorCode: code };
-    default: {
-      const exhaustive: never = trigger;
-      throw new Error(
-        `astToIr: unhandled throw trigger: ${JSON.stringify(exhaustive)}`,
-      );
-    }
   }
 }
 
@@ -1461,36 +1381,26 @@ function namedTriggerDefinition(
       return { kind: 'signal', signalName: raisedCodeOf(stmt.items) ?? '' };
     case 'timer': {
       const timer = timerPayloadOf(stmt.items);
-      return {
-        kind: 'timer',
-        timerKind: timerParticleKind(timer?.particle),
-        expression: timer?.time ?? '',
-      };
+      return timerDefinition(timer?.particle, timer?.time, stmt.items);
     }
     case 'condition': {
       const expr = payloadItemOf(stmt.items)?.value;
       return {
         kind: 'conditional',
         condition: expr !== undefined ? renderExpression(expr) : ALWAYS_TRUE,
+        ...defined({
+          conditionDocumentation: valueDocumentation(stmt.items, 'condition'),
+        }),
       };
     }
     case 'link':
       return { kind: 'link', linkName: raisedCodeOf(stmt.items) ?? '' };
-    default: {
-      const exhaustive: never = trigger;
-      throw new Error(
-        `astToIr: unhandled named trigger: ${JSON.stringify(exhaustive)}`,
-      );
-    }
   }
 }
 
 function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
   const settings = settingsOf(stmt.items);
   const calledElement = attrValue(settings, 'process') ?? '';
-  const binding = versionBinding(settings);
-  const businessKey = elAttrValue(settings, 'businessKey');
-  const mapper = callVariableMapper(settings);
   const { inMappings, outMappings } = lowerCallMappings(stmt.mappings);
 
   builder.flowElements.push({
@@ -1498,9 +1408,11 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
     id: stmt.name,
     ...namedAttrs(stmt),
     calledElement,
-    ...(binding !== undefined ? { binding } : {}),
-    ...(businessKey !== undefined ? { businessKey } : {}),
-    ...(mapper !== undefined ? { mapper } : {}),
+    ...defined({
+      binding: versionBinding(settings),
+      businessKey: elAttrValue(settings, 'businessKey'),
+      mapper: callVariableMapper(settings),
+    }),
     ...(inMappings.length > 0 ? { inMappings } : {}),
     ...(outMappings.length > 0 ? { outMappings } : {}),
     ...readLoop(stmt),
@@ -1614,6 +1526,7 @@ interface RepeatOwner {
   collection?: Expr;
   element?: string;
   completion?: Expr;
+  completionItems: ParenItem[];
   sequential: boolean;
   items: ParenItem[];
 }
@@ -1631,17 +1544,36 @@ function readLoop(stmt: RepeatOwner): Repeatable {
     settingsOf(stmt.items),
     runSettingKey,
   );
+  const { cardinality, collection, element, completion } = stmt;
   return {
     loop: {
-      ...(stmt.cardinality !== undefined
-        ? { cardinality: loopCardinality(stmt.cardinality) }
+      ...(cardinality !== undefined
+        ? defined({
+            cardinality: loopCardinality(cardinality),
+            cardinalityDocumentation: valueDocumentation(stmt.items, 'count'),
+          })
         : {}),
-      ...(stmt.collection !== undefined
-        ? { collection: loopCollection(stmt.collection) }
+      ...defined({
+        collection:
+          collection === undefined ? undefined : loopCollection(collection),
+      }),
+      ...(element !== undefined
+        ? defined({
+            elementVariable: element,
+            elementVariableDocumentation: valueDocumentation(
+              stmt.items,
+              'each',
+            ),
+          })
         : {}),
-      ...(stmt.element !== undefined ? { elementVariable: stmt.element } : {}),
-      ...(stmt.completion !== undefined
-        ? { completionCondition: renderExpression(stmt.completion) }
+      ...(completion !== undefined
+        ? defined({
+            completionCondition: renderExpression(completion),
+            completionConditionDocumentation: valueDocumentation(
+              stmt.completionItems,
+              'condition',
+            ),
+          })
         : {}),
       ...(stmt.sequential ? { sequential: true as const } : {}),
       ...runSettings,
@@ -1656,6 +1588,10 @@ function readLoop(stmt: RepeatOwner): Repeatable {
 function loopCardinality(expr: Expr): string {
   if (isLiteralInt(expr)) {
     return String(expr.value);
+  }
+  // Text around a template is already the composite expression the engine evaluates.
+  if (isLiteralString(expr) && EXPRESSION_ANYWHERE.test(expr.value)) {
+    return expr.value;
   }
   return renderExpression(expr);
 }
@@ -1680,10 +1616,9 @@ interface EngineAttributeOwner {
 }
 
 function readEngineAttributes(owner: EngineAttributeOwner): EngineAttributes {
-  const executionListeners = readExecutionListeners(owner.listeners);
   return {
     ...readJobSettings(settingsOf(owner.items)),
-    ...(executionListeners === undefined ? {} : { executionListeners }),
+    ...defined({ executionListeners: readExecutionListeners(owner.listeners) }),
   };
 }
 
@@ -1729,16 +1664,29 @@ function readTaskListeners(
       binding: listenerBinding(listener),
       ...(listener.event === 'timeout'
         ? {
-            timer: {
-              kind: 'timer' as const,
-              timerKind: timerParticleKind(listener.particle),
-              expression: listener.time ?? '',
-            },
+            timer: timerDefinition(
+              listener.particle,
+              listener.time,
+              listener.items,
+            ),
           }
         : {}),
     }),
   );
   return lowered.length > 0 ? lowered : undefined;
+}
+
+function timerDefinition(
+  particle: string | undefined,
+  time: string | undefined,
+  items: ParenItem[],
+): Extract<EventDefinition, { kind: 'timer' }> {
+  return {
+    kind: 'timer',
+    timerKind: timerParticleKind(particle),
+    expression: time ?? '',
+    ...defined({ expressionDocumentation: valueDocumentation(items, 'timer') }),
+  };
 }
 
 function listenersFor<E extends string>(
@@ -1770,31 +1718,36 @@ function withDeclaredFields<
 }
 
 /**
- * A list, map, or script has no `operaton:field` form; the validator reports
- * it.
+ * A list, map, or script has no `operaton:field` or `operaton:property` form;
+ * the validator reports it.
  */
-function readFieldInjections(params: AstIoParameter[]): FieldInjection[] {
+function textParams(
+  params: AstIoParameter[],
+  direction: string,
+): { name: string; text: string }[] {
   return params
-    .filter((param) => param.direction === FIELD_DIRECTION)
+    .filter((param) => param.direction === direction)
     .flatMap((param) => {
       const value = lowerIoValue(param.value);
       return value.kind === 'text'
-        ? [{ name: param.name, value: value.text }]
+        ? [{ name: param.name, text: value.text }]
         : [];
     });
+}
+
+function readFieldInjections(params: AstIoParameter[]): FieldInjection[] {
+  return textParams(params, FIELD_DIRECTION).map(({ name, text }) => ({
+    name,
+    value: text,
+  }));
 }
 
 function readExtensionProperties(
   params: AstIoParameter[],
 ): ExtensionProperty[] | undefined {
-  const properties = params
-    .filter((param) => param.direction === PROPERTY_DIRECTION)
-    .flatMap((param) => {
-      const value = lowerIoValue(param.value);
-      return value.kind === 'text'
-        ? [{ key: param.name, value: value.text }]
-        : [];
-    });
+  const properties = textParams(params, PROPERTY_DIRECTION).map(
+    ({ name, text }) => ({ key: name, value: text }),
+  );
   return properties.length === 0 ? undefined : properties;
 }
 
@@ -1802,17 +1755,16 @@ function withExternalExtras(
   binding: Extract<ServiceTaskBinding, { kind: 'external' }>,
   stmt: AstServiceTask | AstSendTask | AstBusinessRuleTask,
 ): Extract<ServiceTaskBinding, { kind: 'external' }> {
-  const taskPriority = numericOrElAttrValue(
-    settingsOf(stmt.items),
-    TASK_PRIORITY_KEY,
-  );
-  const properties = readExtensionProperties(stmt.params);
-  const errorMappings = lowerErrorMappings(stmt.errorMappings);
   return {
     ...binding,
-    ...(taskPriority !== undefined ? { taskPriority } : {}),
-    ...(properties !== undefined ? { properties } : {}),
-    ...(errorMappings !== undefined ? { errorMappings } : {}),
+    ...defined({
+      taskPriority: numericOrElAttrValue(
+        settingsOf(stmt.items),
+        TASK_PRIORITY_KEY,
+      ),
+      properties: readExtensionProperties(stmt.params),
+      errorMappings: lowerErrorMappings(stmt.errorMappings),
+    }),
   };
 }
 
@@ -1887,16 +1839,34 @@ function boolAttrValue(
  * same flow id.
  */
 function reserveDefaultFlowId(builder: Builder, gatewayId: string): string {
-  const id = resolveCollision(makeDefaultFlowId(gatewayId), builder.taken);
-  builder.taken.add(id);
-  return id;
+  return claimId(makeDefaultFlowId(gatewayId), builder.taken);
+}
+
+type FlowCondition = Pick<
+  IrSequenceFlow,
+  'conditionExpression' | 'conditionDocumentation'
+>;
+
+function flowCondition(head: {
+  condition: Expr;
+  conditionItems: ParenItem[];
+}): FlowCondition {
+  return {
+    conditionExpression: renderExpression(head.condition),
+    ...defined({
+      conditionDocumentation: valueDocumentation(
+        head.conditionItems,
+        'condition',
+      ),
+    }),
+  };
 }
 
 function addFlow(
   builder: Builder,
   sourceRef: string,
   targetRef: string,
-  condition?: string,
+  condition?: FlowCondition,
   forcedId?: string,
 ): void {
   const id =
@@ -1904,7 +1874,7 @@ function addFlow(
 
   builder.sequenceFlows.push({
     id,
-    ...(condition !== undefined ? { conditionExpression: condition } : {}),
+    ...condition,
     sourceRef,
     targetRef,
   });
@@ -1942,14 +1912,28 @@ function collectNamedIds(process: Process): Set<string> {
 
 type KeyValueAttr = { key: string; value: Expr };
 
+/** The IR leaves an unset field out rather than holding `undefined`. */
+function defined<T extends Record<string, unknown>>(
+  fields: T,
+): { [K in keyof T]?: Exclude<T[K], undefined> } {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined),
+  ) as { [K in keyof T]?: Exclude<T[K], undefined> };
+}
+
 function namedAttrs(stmt: { items: ParenItem[] }): Named {
   const attrs = settingsOf(stmt.items);
-  const name = attrValue(attrs, 'label');
-  const documentation = attrValue(attrs, 'documentation');
-  return {
-    ...(name !== undefined ? { name } : {}),
-    ...(documentation !== undefined ? { documentation } : {}),
-  };
+  return defined({
+    name: attrValue(attrs, 'label'),
+    documentation: attrValue(attrs, DOCUMENTATION_KEY),
+  });
+}
+
+function valueDocumentation(
+  items: ParenItem[],
+  value: keyof typeof VALUE_DOCUMENTATION_KEYS,
+): string | undefined {
+  return attrValue(settingsOf(items), VALUE_DOCUMENTATION_KEYS[value]);
 }
 
 function attrValue(attrs: KeyValueAttr[], key: string): string | undefined {
@@ -1994,8 +1978,4 @@ function stripExpressionWrapper(rendered: string): string {
     return rendered.slice(2, -1);
   }
   return rendered;
-}
-
-function processSetting(process: Process, key: string): string | undefined {
-  return attrValue(settingsOf(process.items), key);
 }

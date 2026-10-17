@@ -64,6 +64,10 @@ const EXPECTED = [
   '    Event StrikeRecorded',
 ];
 
+const symbols = expectSymbols(
+  createBpmnScriptServices(EmptyFileSystem).BpmnScript,
+);
+
 describe('document outline', () => {
   test('every element kinded, every handler named by its header and holding its steps', async () => {
     const text = readFileSync(
@@ -73,12 +77,24 @@ describe('document outline', () => {
       ),
       'utf8',
     );
-    const symbols = expectSymbols(
-      createBpmnScriptServices(EmptyFileSystem).BpmnScript,
-    );
     await symbols({
       text,
       assert: (result) => expect(flatten(result, 0)).toEqual(EXPECTED),
+    });
+  });
+
+  test('a variable and a code constant are kinded by their declaration, not by the declared type', async () => {
+    await symbols({
+      text: 'process P { var total: number var tag: string error BAD start S end E }',
+      assert: (result) =>
+        expect(flatten(result, 0)).toEqual([
+          'Module P',
+          '  Variable total',
+          '  Variable tag',
+          '  Constant BAD',
+          '  Event S',
+          '  Event E',
+        ]),
     });
   });
 });

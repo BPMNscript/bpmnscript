@@ -353,15 +353,21 @@ describeImportFirst(
           target: 'approvedFlag',
         },
       ]);
-      expect(first.dsl).toContain(
-        'call ReviewApprovalCall(label: "Get invoice sign-off", ' +
-          'process: "invoice-approval", binding: deployment, ' +
-          'businessKey: "${orderId}") {\n' +
-          '    in invoiceAmount = amount\n' +
-          '    in doubledAmount = "${amount * 2}"\n' +
-          '    out wasApproved = approved\n' +
-          '    out approvedFlag = "${approved ? 1 : 0}"\n' +
+      expect(first.dsl).toBe(
+        [
+          'process call-import-demo {',
+          '  var amount: any',
+          '  start Start',
+          '  call ReviewApprovalCall(label: "Get invoice sign-off", process: "invoice-approval", binding: deployment, businessKey: "${orderId}") {',
+          '    in invoiceAmount = amount',
+          '    in doubledAmount = "${amount * 2}"',
+          '    out wasApproved = approved',
+          '    out approvedFlag = "${approved ? 1 : 0}"',
           '  }',
+          '  end End',
+          '}',
+          '',
+        ].join('\n'),
       );
     });
   },

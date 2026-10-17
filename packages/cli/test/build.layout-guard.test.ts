@@ -15,9 +15,9 @@ describe('bpmns build: layoutProcess guard', () => {
 
     expect(run.exit).toBeUndefined();
     expect(run.stderr).toEqual([
-      'Warning: no diagram could be drawn for this process (bpmn-auto-layout ' +
-        'failed to lay out the process: Cannot set properties of undefined); ' +
-        'the file deploys but opens without shapes in a modeler',
+      'Warning: no diagram could be drawn for this process\n' +
+        "  note: 'bpmn-auto-layout' failed to lay out the process: Cannot set properties of undefined\n" +
+        '  note: the file deploys, but opens without shapes in a modeler',
     ]);
     expect(run.output).toBeDefined();
     expect(run.output).not.toContain('bpmndi:');

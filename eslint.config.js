@@ -1,10 +1,7 @@
-import bpmnIo from 'eslint-plugin-bpmn-io';
+import js from '@eslint/js';
 import prettierConfig from 'eslint-config-prettier';
 import tsParser from '@typescript-eslint/parser';
 import globals from 'globals';
-
-// The bpmn-io recommended config is an array of flat-config objects.
-const recommended = bpmnIo.configs.recommended;
 
 export default [
   {
@@ -34,9 +31,30 @@ export default [
   },
 
   // -----------------------------------------------------------------------
-  // 2. Base rules — bpmn-io recommended applied to all remaining files.
+  // 2. Base rules — ESLint recommended plus a few stricter checks, applied
+  // to all remaining files.
   // -----------------------------------------------------------------------
-  ...recommended,
+  js.configs.recommended,
+  {
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals['shared-node-browser'],
+    },
+    rules: {
+      'no-bitwise': 'error',
+      'no-constant-condition': ['error', { checkLoops: true }],
+      'no-unused-vars': [
+        'error',
+        {
+          args: 'none',
+          ignoreRestSiblings: true,
+          varsIgnorePattern: '^_',
+          caughtErrors: 'none',
+        },
+      ],
+      'spaced-comment': ['error', 'always'],
+    },
+  },
 
   // -----------------------------------------------------------------------
   // 3. TypeScript source files — add the TS parser and Node globals.

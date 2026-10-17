@@ -31,7 +31,7 @@ Three questions settle together: what word introduces it, given that trigger wor
 ## Decision Outcome
 
 Chosen options: `await`, a name that follows the trigger word rather than preceding it, and a scope of message, timer, signal, and conditional.
-Link joins that scope for the import direction (ADR-0030).
+Link joins that scope as well, for a reason of its own ([ADR-0030](0030-link-events-for-import-round-trip-symmetry.md)).
 
 Before committing to the keyword, the rule was built into a live Langium parser with Chevrotain's self-analysis switched on (`createServicesForGrammar`) and the full trigger-payload battery was run through it.
 Every form parsed with zero ambiguity warnings, including the case that matters: `await timer("PT1H")`, a bare identifier followed by a parenthesized payload, resolved to `trigger='timer'` with the duration as its payload.

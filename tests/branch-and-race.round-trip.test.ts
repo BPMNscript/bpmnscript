@@ -232,20 +232,53 @@ it('prints a fork fallback that can never fire as an else the validator refuses,
   const { ir } = await xmlToIr(await irToXml(inclusiveForkIr('TriageOrder')));
   const { source, warnings } = irToDsl(ir);
   // Leaving the `else` out would compile to a different model.
-  expect(source).toContain('else {');
-  expect(source).toContain('user TriageOrder');
-  expect(warnings.map((w) => [w.category, w.elementId])).toEqual([
-    ['defaultFlow', 'Gateway_1_fork'],
+  expect(source).toBe(
+    [
+      'process dead-fallback {',
+      '  var orderValue: any',
+      '  start Start_1',
+      '  parallel {',
+      '    if (orderValue > 10000) {',
+      '      user AuditOrder',
+      '    }',
+      '    {',
+      '      user ReserveStock',
+      '    }',
+      '    else {',
+      '      user TriageOrder',
+      '    }',
+      '  }',
+      '  end End_1',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  expect(warnings).toEqual([
+    {
+      elementId: 'Gateway_1_fork',
+      category: 'defaultFlow',
+      message: [
+        "fallback of gateway 'Gateway_1_fork' can never run",
+        'note: a branch beside it runs whatever the conditions do, so nothing is ever left over for the fallback to take',
+        "note: the script writes it out as an 'else' all the same, which draws an error when the source is read back",
+        'help: put a condition on the branches beside it, or drop the fallback',
+      ].join('\n'),
+    },
   ]);
-  expect(warnings[0]?.message).toContain('nothing is ever left over');
   expect(await validationErrors(source)).toEqual([
-    expect.stringContaining('could never run'),
+    [
+      "this 'else' branch can never run",
+      "note: an 'else' runs only when no sibling branch was taken, and a branch with no condition is always taken",
+      "help: give every sibling a condition, or remove the 'else'",
+    ].join('\n'),
   ]);
 
   const merged = irToDsl(
     (await xmlToIr(await irToXml(inclusiveForkIr('Gateway_1_join')))).ir,
   );
-  expect(merged.source).not.toContain('else');
+  expect(merged.source).toBe(
+    source.replace('    else {\n      user TriageOrder\n    }\n', ''),
+  );
   expect(merged.warnings).toEqual([]);
   expect(await validationErrors(merged.source)).toEqual([]);
 });

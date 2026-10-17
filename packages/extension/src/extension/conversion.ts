@@ -8,6 +8,29 @@ import {
 
 type ConvertHandler = (uri?: vscode.Uri) => Promise<vscode.Uri | undefined>;
 
+const SHOW_DETAILS = 'Show Details';
+
+let output: vscode.OutputChannel | undefined;
+
+/**
+ * A notification renders its text on one line, so a message's note and help
+ * lines go to the output channel, and the notification offers to open it.
+ */
+function notifyWithDetails(
+  show: typeof vscode.window.showWarningMessage,
+  summary: string,
+  details: readonly string[],
+): void {
+  output ??= vscode.window.createOutputChannel('BPMNscript');
+  output.appendLine(summary);
+  for (const detail of details) {
+    output.appendLine(`  ${detail.replaceAll('\n', '\n    ')}`);
+  }
+  void Promise.resolve(show(summary, SHOW_DETAILS)).then((choice) => {
+    if (choice === SHOW_DETAILS) output?.show(true);
+  });
+}
+
 interface Source {
   uri: vscode.Uri;
   name: string;
@@ -41,7 +64,7 @@ async function readSource(
   const name = path.basename(sourceUri.fsPath);
   if (path.extname(sourceUri.fsPath).toLowerCase() !== ext) {
     await vscode.window.showWarningMessage(
-      `BPMNscript: "${name}" is not a ${ext} file; use "${otherCommand}" for it.`,
+      `BPMNscript: "${name}" is not a ${ext} file. Use "${otherCommand}" for it.`,
     );
     return undefined;
   }
@@ -66,7 +89,7 @@ async function writeOutput(
   source: Source,
   ext: '.bpmn' | '.bpmnscript',
   verb: 'Compiled' | 'Decompiled',
-  output: string,
+  content: string,
 ): Promise<vscode.Uri | undefined> {
   const outputPath = swapExtension(source.uri.fsPath, ext);
   const outputUri = vscode.Uri.file(outputPath);
@@ -75,7 +98,7 @@ async function writeOutput(
   }
   await vscode.workspace.fs.writeFile(
     outputUri,
-    new TextEncoder().encode(output),
+    new TextEncoder().encode(content),
   );
   await vscode.window.showTextDocument(outputUri);
   void vscode.window.showInformationMessage(
@@ -136,11 +159,16 @@ export function decompileCommand(): ConvertHandler {
 
     const result = await decompileBpmnToDsl(source.text);
     if (!result.ok) {
-      await vscode.window.showErrorMessage(
+      const [headline, ...notes] = result.message.split('\n');
+      const summary =
         result.kind === 'unsupported'
-          ? `BPMNscript: "${source.name}" contains an unsupported construct: ${result.message}`
-          : `BPMNscript: Failed to decompile "${source.name}": ${result.message}`,
-      );
+          ? `BPMNscript: "${source.name}" cannot be decompiled: ${headline}`
+          : `BPMNscript: Failed to decompile "${source.name}": ${headline}`;
+      if (notes.length === 0) {
+        await vscode.window.showErrorMessage(summary);
+      } else {
+        notifyWithDetails(vscode.window.showErrorMessage, summary, notes);
+      }
       return undefined;
     }
 
@@ -151,12 +179,17 @@ export function decompileCommand(): ConvertHandler {
       result.output,
     );
     if (outputUri && result.warnings.length > 0) {
-      // Several messages do not name their step, so the id tells them apart.
-      const details = result.warnings
-        .map((w) => `${w.elementId}: ${w.message}`)
-        .join('; ');
-      void vscode.window.showWarningMessage(
-        `BPMNscript: "${source.name}" reported ${result.warnings.length} item(s) during decompile: ${details}`,
+      notifyWithDetails(
+        vscode.window.showWarningMessage,
+        `BPMNscript: "${source.name}" reported ${result.warnings.length} item(s) during decompile.`,
+        result.warnings.map((w) => w.message),
+      );
+    }
+    if (outputUri && result.buildErrors.length > 0) {
+      notifyWithDetails(
+        vscode.window.showWarningMessage,
+        `BPMNscript: The script decompiled from "${source.name}" has ${result.buildErrors.length} compilation error(s) and needs hand-repair.`,
+        result.buildErrors.map((e) => `line ${e.line + 1}: ${e.message}`),
       );
     }
     return outputUri;

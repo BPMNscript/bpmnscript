@@ -15,7 +15,7 @@ Timer carries something different: a word choosing which of BPMN's three timer f
 Conditional carries a boolean expression, which wants the same parenthesized slot error/escalation already use for bindings, but for an unrelated purpose: a condition, not a catch parameter.
 
 Fitting three payload shapes into one handler surface, without forking `on` into a separate grammar rule per trigger kind and without reserving a new keyword for each shape, is the central question this decision resolves.
-Two narrower questions ride along with it: how a timer's payload text becomes one of BPMN's three timer definition kinds without silently picking the wrong one, and how much of BPMN's conditional-evaluation narrowing the surface should expose given that the DSL's audience has no reason to know it exists.
+Two narrower questions ride along with it: how a timer's payload text becomes one of BPMN's three timer definition kinds without picking the wrong one unnoticed, and how much of BPMN's conditional-evaluation narrowing the surface should expose given that the DSL's audience has no reason to know it exists.
 
 ## Decision Drivers
 
@@ -33,11 +33,11 @@ Two narrower questions ride along with it: how a timer's payload text becomes on
 - A binding-marker keyword freeing the parens for bindings only, writing them after a marker such as `as (...)`, which spends a new reserved word on a collision structural lookahead already dissolves for free and breaks the parameter-list reading (`on error(X, code: c, message: m)`, read like `catch (Exception e)`) that motivated the binding shape in the first place.
 - A string-wrapped condition, written as a quoted literal instead of a real expression, which reads worse than the language's own `if (...)` and throws away everything a real expression AST buys, including undeclared-variable checking, type checking, symbol participation, and precise highlighting.
 - Reserving `condition` as a keyword to dispatch the parens, which would be a lexer-global reservation, unusable as an ordinary variable name anywhere in a file, for exactly the reason the trigger and binding words already stay soft identifiers.
-- Timer particles, a bare string for a duration and the keys `at` and `every` for a date and a cycle, as validated identifiers mapping one-to-one to BPMN's three timer forms, which read as the English they mean and cannot silently resolve to the wrong form.
+- Timer particles, a bare string for a duration and the keys `at` and `every` for a date and a cycle, as validated identifiers mapping one-to-one to BPMN's three timer forms, which read as the English they mean and cannot resolve to the wrong form unnoticed.
 - A single particle with the timer form inferred from the value's shape, where an ISO date looks like a date and a duration string looks like a duration, which shifts a scheduling decision onto pattern-matching the value's text: a mistyped ISO string, or an expression the engine evaluates at runtime rather than a literal the compiler can inspect, becomes a different timer kind than the one the author meant, with no diagnostic pointing at the mismatch.
 - Deferring the conditional narrowing attributes and refusing them on import rather than dropping them.
 - Surfacing them as a fourth payload shape, narrower than the other three and carrying nothing but an engine-side optimization hint the audience has no reason to know about.
-- Dropping them silently on import, which would leave the imported process re-checking its condition on every variable change instead of the one the original author scoped it to.
+- Dropping them on import without a word, which would leave the imported process re-checking its condition on every variable change instead of the one the original author scoped it to.
 - Message and signal roots derived from usage, keyed by name, with no declaration form, since the name is both the root's only data and its key.
 - An explicit root declaration mirroring the error message declaration, which generalizes a mechanism that exists only because the error message text has no other source to two triggers for which usage already supplies every property in full.
 
@@ -73,4 +73,4 @@ A message or signal name has neither need, so no declaration form is introduced 
 - Good, because the condition payload stays a real, checkable expression rather than an opaque string, so a condition handler gets the same variable checking, symbol participation, and highlighting an `if` statement already gets.
 - Bad, because a document carrying the conditional narrowing attributes cannot be imported at all, even though the underlying evaluation difference is invisible to a reader who does not already know Camunda's narrowing mechanism exists.
   The refusal is correct but reads as stricter than the visible difference suggests.
-- Bad, because timer's three particles are one more small vocabulary to learn than a single particle would have been, paid once in exchange for a scheduling decision that cannot silently resolve to the wrong timer kind.
+- Bad, because timer's three particles are one more small vocabulary to learn than a single particle would have been, paid once in exchange for a scheduling decision that cannot resolve to the wrong timer kind unnoticed.

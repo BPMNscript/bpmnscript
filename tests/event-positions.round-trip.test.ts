@@ -22,14 +22,27 @@ it('keeps the message start and the labelled terminate end at every hop, and wri
       'Abandon every path',
     ]);
   }
-  for (const line of [
-    'start OrderReceived message("OrderReceived", label: "An order arrives")',
-    'emit message NotifyWarehouse("WarehouseNotified")',
-    'end OrderAbandoned terminate(label: "Abandon every path")',
-    'throw message OrderAcknowledged("OrderAcknowledged")',
-  ]) {
-    expect(rt.dslPrime).toContain(line);
-  }
+  expect(rt.dslPrime).toBe(
+    [
+      'process order-dispatch {',
+      '  start OrderReceived message("OrderReceived", label: "An order arrives") {',
+      '    form {',
+      '      amount: number "Order amount"',
+      '    }',
+      '  }',
+      '  user ConfirmOrder(label: "Confirm the order", assignee: "demo")',
+      '  emit message NotifyWarehouse("WarehouseNotified", class: "com.example.orders.NotifyWarehouseDelegate")',
+      '  if (amount > 1000) {',
+      '    service EscalateOrder(label: "Escalate the order", class: "com.example.orders.EscalateDelegate")',
+      '    end OrderAbandoned terminate(label: "Abandon every path")',
+      '  } else {',
+      '    service DispatchOrder(label: "Dispatch the order", class: "com.example.orders.DispatchDelegate")',
+      '  }',
+      '  throw message OrderAcknowledged("OrderAcknowledged", class: "com.example.orders.AcknowledgeOrderDelegate")',
+      '}',
+      '',
+    ].join('\n'),
+  );
 });
 
 it('carries one bpmn:Message per name in first-appearance order, the start referencing its root beside its form data', () => {

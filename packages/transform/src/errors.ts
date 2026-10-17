@@ -5,6 +5,7 @@
 
 import {
   BOUNDARY_TRIGGERS,
+  diagnosticText,
   EMIT_TRIGGERS,
   END_TRIGGERS,
   FORM_CONSTRAINT_NAMES,
@@ -15,32 +16,81 @@ import {
 } from '@bpmn-script/language';
 
 /**
+ * A message is a headline naming what is wrong and where, then one
+ * `note: ...` or `help: ...` line per further fact. `detail` fields hold only
+ * the short cause the headline quotes, so they stay stable keys to group by.
+ *
  * Subclasses `declare` their fields so class field initializers cannot
  * overwrite what `Object.assign` wrote after `super()`.
  */
 export abstract class UnsupportedConstructError extends Error {
-  constructor(message: string, detail: Record<string, unknown>) {
-    super(message);
+  constructor(
+    headline: string,
+    lines: readonly string[],
+    detail: Record<string, unknown>,
+  ) {
+    super(diagnosticText(headline, ...lines));
     this.name = new.target.name;
     Object.assign(this, detail);
   }
 }
 
+/**
+ * Keeps a quoted value on its headline or note line, and its whitespace
+ * visible: it is often why the value is reported.
+ */
+export function oneLine(text: string): string {
+  return text.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+}
+
+function quotedList(words: readonly string[], conjunction: 'and' | 'or') {
+  return formatPlainWordList(
+    words.map((word) => `'${word}'`),
+    conjunction,
+  );
+}
+
 const SERVICE_TASK_FORMS = [
-  ['a Java class', 'operaton:class (or the deprecated camunda:class alias)'],
-  ['an expression', 'operaton:expression'],
-  ['a delegate expression', 'operaton:delegateExpression'],
-  ['an external task topic', 'operaton:type="external" with operaton:topic'],
+  [
+    'a Java class',
+    "'operaton:class' (or the deprecated 'camunda:class' alias)",
+  ],
+  ['an expression', "'operaton:expression'"],
+  ['a delegate expression', "'operaton:delegateExpression'"],
+  [
+    'an external task topic',
+    `'operaton:type="external"' with 'operaton:topic'`,
+  ],
   [
     'a built-in mail or shell task with its fields',
-    'operaton:type="mail" or "shell" with their operaton:field children',
+    `'operaton:type="mail"' or 'operaton:type="shell"' with their 'operaton:field' children`,
   ],
-  ['a decision reference on a business rule task', 'operaton:decisionRef'],
+  ['a decision reference on a business rule task', "'operaton:decisionRef'"],
 ] as const;
 
 export const SERVICE_TASK_FORM_ATTRIBUTES = formatPlainWordList(
   SERVICE_TASK_FORMS.map(([, attributes]) => attributes),
   'and',
+);
+
+function formLines(
+  forms: readonly (readonly [prose: string, attributes: string])[],
+): readonly string[] {
+  return [
+    `note: the supported forms are ${formatPlainWordList(forms.map(([prose]) => prose))}`,
+    `note: their attributes are ${formatPlainWordList(
+      forms.map(([, attributes]) => attributes),
+      'and',
+    )}`,
+  ];
+}
+
+/** Closes a refusal of the execution form itself, not of a setting beside it. */
+export const SERVICE_TASK_FORM_LINES = formLines(SERVICE_TASK_FORMS);
+
+/** A thrown message takes the code and external forms, the first four rows. */
+export const THROWN_MESSAGE_FORM_LINES = formLines(
+  SERVICE_TASK_FORMS.slice(0, 4),
 );
 
 /**
@@ -56,10 +106,11 @@ export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
     serviceTaskId: string,
     construct: string,
     subject = 'Service task',
+    ...notes: string[]
   ) {
     super(
-      `${subject} '${serviceTaskId}' uses unsupported execution form: ${construct}. ` +
-        `Supported forms are ${formatPlainWordList(SERVICE_TASK_FORMS.map(([prose]) => prose))}.`,
+      `${subject.toLowerCase()} '${serviceTaskId}' uses an unsupported execution form: ${construct}`,
+      notes,
       { serviceTaskId, construct, subject },
     );
   }
@@ -72,18 +123,25 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
 
   constructor(elementId: string, fieldId: string, fieldType: string) {
     super(
-      `The form field '${fieldId}' on '${elementId}' has type '${fieldType}', ` +
-        'which this tool cannot import. Supported form field types are ' +
-        'string, long, boolean, date, and enum.',
+      `form field '${fieldId}' on '${elementId}' has the unsupported type '${fieldType}'`,
+      [
+        `note: the supported form field types are ${quotedList(['string', 'long', 'boolean', 'date', 'enum'], 'and')}`,
+      ],
       { elementId, fieldId, fieldType },
     );
   }
 }
 
-const REGISTERED_VALIDATOR_NAMES = formatPlainWordList(
+const REGISTERED_VALIDATOR_NAMES = quotedList(
   FORM_CONSTRAINT_NAMES.filter((name) => name !== 'validator'),
   'and',
 );
+
+/** Closes a refusal of the constraint's name, not of its config or count. */
+export const FORM_CONSTRAINT_NAME_LINES: readonly string[] = [
+  `note: Operaton registers ${REGISTERED_VALIDATOR_NAMES}, and reads a custom validator class or expression off 'validator'`,
+  "note: 'FormValidators.createValidator' fails the deployment on any other name",
+];
 
 export class UnsupportedFormFieldConstraintError extends UnsupportedConstructError {
   declare readonly elementId: string;
@@ -96,25 +154,22 @@ export class UnsupportedFormFieldConstraintError extends UnsupportedConstructErr
     fieldId: string,
     constraintName: string,
     detail: string,
+    ...notes: string[]
   ) {
     super(
-      `The constraint '${constraintName}' on form field '${fieldId}' of '${elementId}' ` +
-        `cannot be imported: ${detail}. Operaton registers ` +
-        `${REGISTERED_VALIDATOR_NAMES}, and reads a custom validator class ` +
-        "or expression off 'validator'; FormValidators.createValidator " +
-        'fails the deployment on any other name.',
+      `constraint '${constraintName}' on form field '${fieldId}' of '${elementId}' cannot be imported: ${detail}`,
+      notes,
       { elementId, fieldId, constraintName, detail },
     );
   }
 }
 
 export const SUPPORTED_KINDS_MESSAGE =
-  'Only start/end events, throws, emits, boundary events, event ' +
-  'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
-  'receive tasks, business rule tasks, script tasks, exclusive ' +
-  'gateways, parallel gateways, inclusive gateways, event-based ' +
-  'gateways, embedded subprocesses, attempt blocks, call activities, ' +
-  'and sequence flows are supported.';
+  'note: BPMNscript imports start and end events, throws, emits, boundary ' +
+  'events, event handlers, plain tasks, user tasks, service tasks, send ' +
+  'tasks, receive tasks, business rule tasks, script tasks, exclusive ' +
+  'gateways, parallel gateways, inclusive gateways, event-based gateways, ' +
+  'embedded subprocesses, attempt blocks, call activities and sequence flows';
 
 export class UnsupportedElementError extends UnsupportedConstructError {
   declare readonly qname: string;
@@ -122,10 +177,36 @@ export class UnsupportedElementError extends UnsupportedConstructError {
 
   constructor(qname: string, elementId?: string) {
     super(
-      `The BPMN element ${qname}` +
-        (elementId ? ` (id='${elementId}')` : '') +
-        ` is a kind that this tool cannot import. ${SUPPORTED_KINDS_MESSAGE}`,
+      (elementId ? `element '${elementId}' ` : 'an element ') +
+        `of the kind '${qname}' cannot be imported`,
+      [SUPPORTED_KINDS_MESSAGE],
       { qname, elementId },
+    );
+  }
+}
+
+export const PLAIN_NAME_NOTE =
+  "note: a plain name is letters, digits and '_', with '-' between them, and no keyword";
+
+/**
+ * The engine reads and writes a variable under its exact name, and the script
+ * writes one only as a plain name, with no backtick form.
+ */
+export class UnsupportedVariableNameError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly attribute: string;
+  declare readonly variableName: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, attribute: string, variableName: string) {
+    const detail = `${attribute} names the variable '${oneLine(variableName)}', which BPMNscript cannot write back unchanged`;
+    super(
+      `element '${elementId}' cannot be imported: ${detail}`,
+      [
+        'note: BPMNscript writes a variable as a plain name, and this name is not one',
+        PLAIN_NAME_NOTE,
+      ],
+      { elementId, attribute, variableName, detail },
     );
   }
 }
@@ -134,14 +215,17 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
 
-  constructor(elementId: string, detail: string) {
+  constructor(elementId: string, detail: string, ...notes: string[]) {
     super(
-      `The call activity '${elementId}' cannot be imported: ${detail}. ` +
-        'Supported call activities name a calledElement, an optional ' +
-        'latest/deployment/version binding, a businessKey, a ' +
-        'variableMappingClass or variableMappingDelegateExpression, and ' +
-        'in/out mappings using source+target, sourceExpression+target, or ' +
-        'variables="all".',
+      `call activity '${elementId}' cannot be imported: ${detail}`,
+      [
+        ...notes,
+        "note: a supported call activity names a 'calledElement', an optional " +
+          "'latest', 'deployment' or 'version' binding, a 'businessKey', a " +
+          "'variableMappingClass' or 'variableMappingDelegateExpression', and " +
+          "in and out mappings using 'source' with 'target', " +
+          `'sourceExpression' with 'target', or 'variables="all"'`,
+      ],
       { elementId, detail },
     );
   }
@@ -160,9 +244,9 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
     definitionType: string,
   ) {
     super(
-      `The ${eventKind} event '${elementId}' carries a ${friendlyEventDefinition(definitionType)} ` +
-        `definition (${definitionType}) that this tool cannot import. ` +
-        supportedKindsMessage(eventKind),
+      `${eventKind} event '${elementId}' carries an unsupported ` +
+        `${friendlyEventDefinition(definitionType)} definition '${definitionType}'`,
+      supportedKindsLines(eventKind),
       { elementId, eventKind, definitionType },
     );
   }
@@ -181,24 +265,20 @@ const END_EVENT_TRIGGERS = [
   ...THROW_TRIGGERS,
 ];
 
-const EVENT_SURFACE_NOTE =
-  `Event handlers catch one ${formatPlainWordList(HANDLER_START_TRIGGERS)} ` +
-  'trigger on their single start event; throws and emits carry the code or ' +
-  'name their kind requires, and compensation carries neither.';
+export const HANDLER_TRIGGER_NOTE = `note: an event handler catches one ${quotedList(HANDLER_START_TRIGGERS, 'or')} trigger on its single start event`;
+
+export const THROW_CODE_NOTE =
+  'note: throws and emits carry the code or name their kind requires, and compensation carries neither';
 
 export class UnsupportedEventFeatureError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
 
-  constructor(
-    elementId: string,
-    detail: string,
-    remedy: string = EVENT_SURFACE_NOTE,
-  ) {
-    super(
-      `The element '${elementId}' cannot be imported: ${detail}. ${remedy}`,
-      { elementId, detail },
-    );
+  constructor(elementId: string, detail: string, ...lines: string[]) {
+    super(`element '${elementId}' cannot be imported: ${detail}`, lines, {
+      elementId,
+      detail,
+    });
   }
 }
 
@@ -207,8 +287,13 @@ export class UnsupportedLoopCharacteristicsError extends UnsupportedConstructErr
   declare readonly loopType: string;
   declare readonly detail: string;
 
-  constructor(elementId: string, loopType: string, detail: string) {
-    super(`The repetition on '${elementId}' cannot be imported: ${detail}.`, {
+  constructor(
+    elementId: string,
+    loopType: string,
+    detail: string,
+    ...notes: string[]
+  ) {
+    super(`repetition on '${elementId}' cannot be imported: ${detail}`, notes, {
       elementId,
       loopType,
       detail,
@@ -225,8 +310,11 @@ export class UnsupportedCollaborationError extends UnsupportedConstructError {
 
   constructor(detail: string) {
     super(
-      `The file contains ${detail}; this tool imports one process, and ` +
-        '`BpmnParse.parseProcessDefinitions` deploys each of them.',
+      `the file contains ${detail}`,
+      [
+        'note: BPMNscript imports one process',
+        "note: 'BpmnParse.parseProcessDefinitions' deploys each of them",
+      ],
       { detail },
     );
   }
@@ -235,8 +323,8 @@ export class UnsupportedCollaborationError extends UnsupportedConstructError {
 export class UnsupportedDocumentError extends UnsupportedConstructError {
   declare readonly detail: string;
 
-  constructor(detail: string) {
-    super(`The document cannot be imported: ${detail}.`, { detail });
+  constructor(detail: string, ...notes: string[]) {
+    super(`the document cannot be imported: ${detail}`, notes, { detail });
   }
 }
 
@@ -244,17 +332,10 @@ export class UnsupportedExtensionFormError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
 
-  constructor(elementId: string, detail: string) {
+  constructor(elementId: string, detail: string, ...notes: string[]) {
     super(
-      `The Operaton extension content on '${elementId}' cannot be imported: ${detail}. ` +
-        'An input/output parameter or map entry carries body text or exactly ' +
-        'one nested value, never both or two, and is always named; a script ' +
-        'value declares a scriptFormat and carries inline code, never an ' +
-        'external resource; a listener names exactly one binding and an event ' +
-        'its position accepts; a timeout task listener carries exactly one ' +
-        'timer, which no other task listener event carries; and an injected ' +
-        'field names exactly one value slot, Operaton refusing to deploy one ' +
-        'that names none or both of its literal slots.',
+      `the Operaton extension content on '${elementId}' cannot be imported: ${detail}`,
+      notes,
       { elementId, detail },
     );
   }
@@ -264,12 +345,10 @@ export class UnsupportedFormReferenceError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
 
-  constructor(elementId: string, detail: string) {
+  constructor(elementId: string, detail: string, ...notes: string[]) {
     super(
-      `The form reference on '${elementId}' cannot be imported: ${detail}. ` +
-        'Operaton refuses to deploy a user task that names both a form key ' +
-        'and a form reference, and one whose form reference has no binding ' +
-        'or a binding outside latest, deployment, and version.',
+      `form reference on '${elementId}' cannot be imported: ${detail}`,
+      notes,
       { elementId, detail },
     );
   }
@@ -283,29 +362,36 @@ export class UnsupportedConditionExpressionError extends UnsupportedConstructErr
   declare readonly elementId: string;
   declare readonly detail: string;
 
-  constructor(elementId: string, detail: string) {
+  constructor(elementId: string, detail: string, ...notes: string[]) {
     super(
-      `The condition on '${elementId}' cannot be imported: ${detail}. This ` +
-        'tool writes a condition as a tFormalExpression Operaton evaluates ' +
-        'as UEL; a condition of another type, or one Operaton hands to a ' +
-        'script engine, has no spelling here.',
+      `condition on '${elementId}' cannot be imported: ${detail}`,
+      [
+        ...notes,
+        "note: BPMNscript writes a condition as a 'tFormalExpression', which " +
+          'Operaton evaluates as UEL',
+        'note: a condition of another type, or one Operaton hands to a script ' +
+          'engine, has no spelling in BPMNscript',
+      ],
       { elementId, detail },
     );
   }
 }
 
-/** `detail` is the engine's own sentence, so the refusal reads as the deployment error would. */
+/** `detail` is the engine's own wording, so the refusal reads as the deployment error would. */
 export class UnsupportedGatewayShapeError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
 
   constructor(elementId: string, detail: string) {
     super(
-      `The exclusive gateway '${elementId}' cannot be imported: ${detail} ` +
-        "Operaton's BpmnParse.validateExclusiveGateway fails the deployment " +
-        'on this shape, so there is nothing that runs to write back; give ' +
-        'every route but the fallback a condition, and name the fallback ' +
-        "in the gateway's 'default'.",
+      `exclusive gateway '${elementId}' cannot be imported`,
+      [
+        "note: Operaton's 'BpmnParse.validateExclusiveGateway' fails the " +
+          `deployment with "${detail}"`,
+        'note: no running process exists to write back',
+        'help: give every route but the fallback a condition, and name the ' +
+          "fallback in the gateway's 'default'",
+      ],
       { elementId, detail },
     );
   }
@@ -315,12 +401,10 @@ export class UnsupportedErrorMappingError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
 
-  constructor(elementId: string, detail: string) {
+  constructor(elementId: string, detail: string, ...notes: string[]) {
     super(
-      `The error mapping on '${elementId}' cannot be imported: ${detail}. ` +
-        "Operaton's parseOperatonErrorEventDefinitions fails the deployment " +
-        'on an operaton:errorEventDefinition carrying no expression, and ' +
-        'this tool needs its errorRef to name an error root carrying a code.',
+      `error mapping on '${elementId}' cannot be imported: ${detail}`,
+      notes,
       { elementId, detail },
     );
   }
@@ -330,15 +414,11 @@ export class UnsupportedAssignmentError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
 
-  constructor(elementId: string, detail: string) {
-    super(
-      `The assignment on '${elementId}' cannot be imported: ${detail}. ` +
-        'Operaton refuses to deploy a user task carrying a ' +
-        'bpmn:humanPerformer beside operaton:assignee ' +
-        '(BpmnParse.parseUserTaskCustomExtensions) or more than one ' +
-        'bpmn:humanPerformer (parseHumanPerformer).',
-      { elementId, detail },
-    );
+  constructor(elementId: string, detail: string, ...notes: string[]) {
+    super(`assignment on '${elementId}' cannot be imported: ${detail}`, notes, {
+      elementId,
+      detail,
+    });
   }
 }
 
@@ -347,26 +427,26 @@ function friendlyEventDefinition(definitionType: string): string {
   return local.replace(/EventDefinition$/, '').toLowerCase() || 'special';
 }
 
-function supportedKindsMessage(eventKind: EventPosition): string {
+function supportedKindsLines(eventKind: EventPosition): string[] {
   switch (eventKind) {
     case 'start':
-      return (
-        "A plain start event carries no definition; a process's start " +
-        `supports ${formatPlainWordList(START_TRIGGERS)}, and an event ` +
-        `handler's start supports ${formatPlainWordList(HANDLER_START_TRIGGERS)}.`
-      );
+      return [
+        'note: a plain start event carries no definition',
+        `note: a process's start supports ${quotedList(START_TRIGGERS, 'or')}`,
+        `note: an event handler's start supports ${quotedList(HANDLER_START_TRIGGERS, 'or')}`,
+      ];
     case 'end':
-      return (
-        `A typed end event supports ${formatPlainWordList(END_EVENT_TRIGGERS)}, ` +
-        'plus cancel inside a block that can be given up.'
-      );
+      return [
+        `note: a typed end event supports ${quotedList(END_EVENT_TRIGGERS, 'or')}, ` +
+          "plus 'cancel' inside a block that can be given up",
+      ];
     case 'intermediate throw':
-      return `An emit supports ${formatPlainWordList(EMIT_TRIGGERS)}.`;
+      return [`note: an emit supports ${quotedList(EMIT_TRIGGERS, 'or')}`];
     case 'boundary':
-      return (
-        `A boundary event supports ${formatPlainWordList(BOUNDARY_TRIGGERS_BUT_CANCEL)}, ` +
-        'plus cancel on a block that can be given up.'
-      );
+      return [
+        `note: a boundary event supports ${quotedList(BOUNDARY_TRIGGERS_BUT_CANCEL, 'or')}, ` +
+          "plus 'cancel' on a block that can be given up",
+      ];
   }
 }
 
@@ -379,7 +459,7 @@ export class LayoutError extends Error {
 
   constructor(xml: string, cause: unknown) {
     const causeMessage = cause instanceof Error ? cause.message : String(cause);
-    super(`bpmn-auto-layout failed to lay out the process: ${causeMessage}`);
+    super(`'bpmn-auto-layout' failed to lay out the process: ${causeMessage}`);
     this.name = 'LayoutError';
     this.xml = xml;
   }

@@ -12,7 +12,6 @@ import type { Model } from '@bpmn-script/language';
 import { xmlToIr } from '@bpmn-script/transform';
 
 import {
-  expectMentions,
   runActionAt,
   runBuild,
   runParse,
@@ -101,6 +100,12 @@ const TWO_DROPPED_CONDITIONS_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
+const dropped = (condition: string, step: string): string =>
+  `Warning: condition '\${${condition}}' on the route out of '${step}' was dropped\n` +
+  `  note: it is the only route out of '${step}', and BPMNscript writes conditions only on the branches of a split\n` +
+  '  note: when the condition is false, Operaton stops the original process with an error\n' +
+  '  note: the rebuilt process always continues';
+
 // A number field whose default the engine's `LongFormType` cannot convert:
 // imported as written, refused by the validator.
 const DECIMAL_DEFAULT_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
@@ -122,21 +127,12 @@ const DECIMAL_DEFAULT_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-type ParseExpectation = {
-  /** The id of every `Warning: <id>: ...` line, in the order printed. */
-  warningIds: string[];
-  mentions?: string[];
-  script?: string[];
-  /** Set where the warnings differ in nothing but the element they name. */
-  sameMessage?: boolean;
-  /** The re-validation lines after the warnings, whole; a RegExp where the line number is not pinned. */
-  buildErrorLines?: (string | RegExp)[];
-};
-
 type ParseRow = readonly [
   title: string,
   input: Input,
-  expected: ParseExpectation,
+  /** Every stderr entry, whole. */
+  stderr: string[],
+  script: string,
 ];
 
 describe('bpmns parse', () => {
@@ -144,74 +140,94 @@ describe('bpmns parse', () => {
     [
       'a BPMN this tool generated decompiles with nothing to report',
       { file: GOLDEN_GENERATED_BPMN },
-      { warningIds: [] },
+      [],
+      `process invoice-approval {
+  start ReviewStart {
+    form {
+      amount: number "Invoice amount"
+    }
+  }
+  user ReviewInvoice(assignee: "demo")
+  if (amount > 1000) {
+    user SeniorApproval(assignee: "manager")
+  } else {
+    service AutoApprove(class: "com.example.invoice.AutoApproveDelegate")
+  }
+  end Done
+}
+`,
     ],
     [
       'a region the decompiler cannot phrase is written with a hand-repair marker, and both warnings name the split it starts at',
       { text: UNSTRUCTURED_FORK_BPMN },
-      {
-        warningIds: ['Fork', 'Fork'],
-        mentions: ['unstructured region', 'hand-repair'],
-        script: ['// unstructured region: hand-repair required'],
-      },
+      [
+        "Warning: gateway 'Fork' was printed as jumps and its split was lost\n" +
+          '  note: the branches leaving it have no form in the script, so a branch leaves as a jump, or as a marker where it opens on something the script cannot name\n' +
+          '  note: a condition weighing a branch is written on its jump\n' +
+          '  note: whether the split opened one branch, every branch whose condition held, or the first to resolve is written nowhere\n' +
+          '  note: a jump ends the path it sits on, so at most one branch is left running\n' +
+          '  note: the marker line above the jumps is where hand-repair starts',
+        "Warning: a route into 'Fork' was left out of the script\n" +
+          '  note: the route has no form in the script, so this part of the script is unstructured\n' +
+          "  note: the marker comment where it belonged names 'Fork' and is where hand-repair starts",
+      ],
+      `process unstructured {
+  start S
+  // unstructured region: hand-repair required (split Fork degraded to jumps; was parallel)
+  if (true) {
+    goto A
+  } else {
+    goto B
+  }
+  user A
+  end E
+  user B
+  // unstructured region: hand-repair required (dropped edge into Fork)
+}
+`,
     ],
     [
-      'two steps that lost the same thing are told apart by the id each line leads with',
+      'two steps that lost the same thing are told apart by the step each headline names',
       { text: TWO_DROPPED_CONDITIONS_BPMN },
-      {
-        warningIds: ['CheckStock', 'ReserveGoods'],
-        sameMessage: true,
-        script: ['CheckStock', 'ReserveGoods'],
-      },
+      [dropped('inStock', 'CheckStock'), dropped('paid', 'ReserveGoods')],
+      `process two-conditions {
+  var inStock: any
+  var paid: any
+  start Start
+  user CheckStock(label: "Check stock")
+  user ReserveGoods(label: "Reserve goods")
+  user ShipOrder(label: "Ship order")
+  end Done
+}
+`,
     ],
     [
       'a setting the import warning names as an eventual failure is confirmed, after that warning, by re-validating the printed script',
       { text: DECIMAL_DEFAULT_BPMN },
-      {
-        warningIds: ['Review'],
-        mentions: ["default '1.5'", 'imported as written'],
-        script: ['amount: number = 1.5'],
-        buildErrorLines: [
-          'Warning: the printed script draws 1 error(s) when built; hand-repair is needed:',
-          /^ {2}line \d+: The default 1\.5 of number field 'amount' is not an integer; the engine converts it with Long\.valueOf every time the form renders \(LongFormType\.convertValue\) and throws on anything else\. \[.+\]$/,
-        ],
-      },
+      [
+        "Warning: the engine cannot use default '1.5' on form field 'amount' of 'Review' as written\n" +
+          "  note: 'LongFormType.convertValue' parses it with 'Long.valueOf' on every render of the form, and it is not an integer\n" +
+          '  note: it was imported as written, and the printed script draws an error at the field',
+        'Warning: the printed script draws 1 error(s) when built and needs hand-repair:',
+        "  line 5: the default 1.5 of number field 'amount' is not an integer [1.5]\n" +
+          '    note: the engine converts it with Long.valueOf every time the form renders and throws on anything else',
+      ],
+      `process decimal-default-carry {
+  start S
+  user Review {
+    form {
+      amount: number = 1.5
+    }
+  }
+  end E
+}
+`,
     ],
-  ])('%s', async (_title, input, expected) => {
+  ])('%s', async (_title, input, stderr, script) => {
     const run = await runParse(input);
 
-    expect(run.exit).toBeUndefined();
-    expect(run.output).toBeDefined();
-
-    const tailLen = expected.buildErrorLines?.length ?? 0;
-    expect(run.stderr).toHaveLength(expected.warningIds.length + tailLen);
-    const splitAt = run.stderr.length - tailLen;
-    const idLines = run.stderr.slice(0, splitAt);
-    const tail = run.stderr.slice(splitAt);
-
-    const prefixes = idLines.map(
-      (line) => /^Warning: ([^:]+): /.exec(line)?.[1],
-    );
-    expect(prefixes).toEqual(expected.warningIds);
-
-    tail.forEach((line, i) => {
-      const want = expected.buildErrorLines![i];
-      if (want instanceof RegExp) expect(line).toMatch(want);
-      else expect(line).toBe(want);
-    });
-
-    expectMentions(idLines.join('\n'), expected.mentions ?? []);
-    expectMentions(run.output ?? '', expected.script ?? []);
-
-    if (expected.sameMessage) {
-      const bodies = idLines.map((line, i) =>
-        line.slice(`Warning: ${expected.warningIds[i]}: `.length),
-      );
-      expect(new Set(bodies).size).toBe(1);
-      expect(bodies[0]).not.toBe('');
-    }
-
-    const document = await parse(run.output!);
+    expect(run).toEqual({ exit: undefined, stderr, output: script });
+    const document = await parse(script);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
@@ -243,17 +259,14 @@ const TYPE_MISMATCH_SOURCE = `process type-mismatch {
 }
 `;
 
-type BuildExpectation = {
-  exit?: number;
-  reimportsAs?: string;
-  stderrLines: number;
-  mentions?: string[];
-};
-
 type BuildRow = readonly [
   title: string,
   input: Input,
-  expected: BuildExpectation,
+  exit: number | undefined,
+  /** Every stderr entry, whole. */
+  stderr: string[],
+  /** The process id the written BPMN imports back as; undefined where nothing is written. */
+  reimportsAs: string | undefined,
 ];
 
 describe('bpmns build', () => {
@@ -261,44 +274,49 @@ describe('bpmns build', () => {
     [
       'the invoice-approval example builds to BPMN that imports back under its own id',
       { file: INVOICE_APPROVAL_SRC },
-      { reimportsAs: 'invoice-approval', stderrLines: 0 },
+      undefined,
+      [],
+      'invoice-approval',
     ],
     [
       'an undeclared variable is only a warning, so the build still writes its output',
       { text: WARNING_ONLY_SOURCE },
-      {
-        reimportsAs: 'warning-only',
-        stderrLines: 1,
-        mentions: ['amount', 'not declared'],
-      },
+      undefined,
+      [
+        "Warning: line 3: variable 'amount' is not declared\n" +
+          "  help: add 'var amount: <type>' to the process",
+      ],
+      'warning-only',
     ],
     [
       'a type mismatch fails the build with exit code 1 and writes nothing',
       { text: TYPE_MISMATCH_SOURCE },
-      { exit: 1, stderrLines: 2, mentions: ['Validation errors:'] },
+      1,
+      [
+        'Validation errors:',
+        "  line 4: variable 'amount' of type 'string' cannot be used in an ordered comparison with '>' [amount > 1000]",
+      ],
+      undefined,
     ],
     [
       'a keyword typo lists the parser error instead of the no-process message',
       { text: KEYWORD_TYPO_SOURCE },
-      {
-        exit: 1,
-        stderrLines: 2,
-        mentions: ['Validation errors:', 'proces'],
-      },
+      1,
+      [
+        'Validation errors:',
+        "  line 1: unexpected 'proces' outside any process [proces]",
+      ],
+      undefined,
     ],
-  ])('%s', async (_title, input, expected) => {
+  ])('%s', async (_title, input, exit, stderr, reimportsAs) => {
     const run = await runBuild(input);
 
-    expect(run.exit).toBe(expected.exit);
-    expect(run.stderr).toHaveLength(expected.stderrLines);
-    expectMentions(run.stderr.join('\n'), expected.mentions ?? []);
-
-    if (expected.reimportsAs === undefined) {
+    expect([run.exit, run.stderr]).toEqual([exit, stderr]);
+    if (reimportsAs === undefined) {
       expect(run.output).toBeUndefined();
       return;
     }
-    expect(run.output).toBeDefined();
-    expect((await xmlToIr(run.output!)).ir.id).toBe(expected.reimportsAs);
+    expect((await xmlToIr(run.output!)).ir.id).toBe(reimportsAs);
     expect(run.output!.match(/exporterVersion="[^"]*"/g)).toEqual([
       `exporterVersion="${PACKAGE_VERSION}"`,
     ]);
@@ -323,14 +341,14 @@ const SWAPPED_DSL =
   'process rechnung_prüfen { start S user Prüfung(assignee: "demo") end E }';
 
 const NOT_XML = (preview: string) =>
-  `Error: not an XML document (starts with "${preview}"); ` +
-  'a .bpmnscript file is built with `bpmns build`';
+  `Error: not an XML document (starts with '${preview}')\n` +
+  "  help: build a .bpmnscript file with 'bpmns build'";
 
 type GuardCase = {
   inputPath: string;
   opts: CommandOptions;
   exit: number | undefined;
-  /** The first stderr line, where the row expects one. */
+  /** The one stderr entry, where the row expects one. */
   line?: string;
   check?: () => void;
 };
@@ -370,7 +388,9 @@ const refusesExisting =
       inputPath,
       opts: {},
       exit: 2,
-      line: `Error: ${outputPath} exists; pass --force to overwrite it or -o for another path`,
+      line:
+        `Error: ${outputPath} exists\n` +
+        "  help: pass '--force' to overwrite it, or '-o' for another path",
       check: () =>
         expect(fs.readFileSync(outputPath, 'utf-8')).toBe('PRE-EXISTING'),
     };
@@ -526,8 +546,8 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
       'order.txt',
       VALID_DSL,
       2,
-      'Error: expected a file with one of these extensions: .bpmnscript; ' +
-        'a .bpmn file is decompiled with `bpmns parse`',
+      'Error: expected a file with one of these extensions: .bpmnscript\n' +
+        "  help: decompile a .bpmn file with 'bpmns parse'",
     ),
     refusedFile(
       'build: an empty source is reported plainly, without a pipeline stage name',
@@ -577,9 +597,10 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
       '<html><body>hi</body></html>',
       2,
       (inputPath) =>
-        `Error: failed to parse ${inputPath}: failed to parse document as <bpmn:Definitions> ` +
-        '(root element is <html>; expected <bpmn:definitions> in namespace ' +
-        'http://www.omg.org/spec/BPMN/20100524/MODEL)',
+        `Error: failed to parse ${inputPath}: failed to parse document as <bpmn:Definitions>\n` +
+        "  note: the root element is '<html>'\n" +
+        "  note: BPMN expects '<bpmn:definitions>' in the namespace " +
+        "'http://www.omg.org/spec/BPMN/20100524/MODEL'",
     ),
     refusedFile(
       'parse: a wrong bpmn namespace names the namespace it found',
@@ -590,9 +611,11 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
         '<bpmn:process id="p"/></bpmn:definitions>',
       2,
       (inputPath) =>
-        `Error: failed to parse ${inputPath}: failed to parse document as <bpmn:Definitions> ` +
-        '(root element is <bpmn:definitions>; expected <bpmn:definitions> in namespace ' +
-        'http://www.omg.org/spec/BPMN/20100524/MODEL; found xmlns:bpmn=http://example.com/wrong)',
+        `Error: failed to parse ${inputPath}: failed to parse document as <bpmn:Definitions>\n` +
+        "  note: the root element is '<bpmn:definitions>'\n" +
+        "  note: BPMN expects '<bpmn:definitions>' in the namespace " +
+        "'http://www.omg.org/spec/BPMN/20100524/MODEL'\n" +
+        "  note: the file declares 'xmlns:bpmn=http://example.com/wrong'",
     ),
     refusedFile(
       'parse: an unclosed tag with no closing bracket anywhere is cut to its first line, capped at 200 characters, with any control byte stripped',
@@ -612,7 +635,7 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
       const { inputPath, opts, exit, line, check } = make(dir);
       const run = await runActionAt(action, inputPath, opts);
       expect(run.exit).toBe(exit);
-      if (line !== undefined) expect(run.stderr[0]).toBe(line);
+      expect(run.stderr).toEqual(line === undefined ? [] : [line]);
       check?.();
     } finally {
       await fsp.rm(dir, { recursive: true, force: true });

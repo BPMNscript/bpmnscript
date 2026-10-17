@@ -86,9 +86,10 @@ export function isNamedStatement(node: AstNode): node is NamedStatement {
     isBusinessRuleTask(node) ||
     isSubProcess(node) ||
     isCallActivity(node) ||
-    ((isThrowStatement(node) || isEmitStatement(node)) &&
-      node.name !== undefined) ||
-    (isIntermediateCatchEvent(node) && node.name !== undefined)
+    ((isThrowStatement(node) ||
+      isEmitStatement(node) ||
+      isIntermediateCatchEvent(node)) &&
+      node.name !== undefined)
   );
 }
 

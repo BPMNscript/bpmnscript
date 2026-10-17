@@ -67,12 +67,10 @@ export {
 export { parseJuel, renderRawFallback } from './juel.js';
 export type { JuelNode } from './juel.js';
 
-export { irToXml } from './ir-to-xml.js';
+export { HISTORY_TIME_TO_LIVE, irToXml } from './ir-to-xml.js';
 export {
-  COMPENSATION_BOUNDARY_DETAIL,
   CONNECTOR_CONSTRUCT,
   dataConstructDropMessage,
-  IS_FOR_COMPENSATION_DETAIL,
   loopDroppedMessage,
   manualTaskMessage,
   xmlToIr,
@@ -89,6 +87,7 @@ export {
   UnsupportedCollaborationError,
   UnsupportedDocumentError,
   UnsupportedCallActivityError,
+  UnsupportedVariableNameError,
   UnsupportedExtensionFormError,
   UnsupportedFormReferenceError,
   UnsupportedConditionExpressionError,
@@ -101,7 +100,11 @@ export {
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';
-export { irToDsl, UNSTRUCTURED_MARKER } from './ir-to-dsl.js';
+export {
+  irToDsl,
+  isSynthesizedTerminalId,
+  UNSTRUCTURED_MARKER,
+} from './ir-to-dsl.js';
 export type { PrintWarning, PrintWarningCategory } from './ir-to-dsl.js';
 export {
   EMPTY_INPUT_MESSAGE,

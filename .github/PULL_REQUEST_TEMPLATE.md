@@ -1,20 +1,20 @@
-## Related Issues
+## Related issues
 
 Closes #
 
 ## Description
 
-<!-- 1-3 sentences describing the change -->
+<!-- What changed and why, in one to three sentences -->
 
-## Steps to Test
+## How to test
 
-<!-- How can a reviewer verify this change? -->
+<!-- How can a reviewer check this change? -->
 
 1.
 
 ## Checklist
 
-- [ ] I have tested this change manually
-- [ ] I have added or updated tests as appropriate
+- [ ] I tested this change by hand
+- [ ] I added or updated tests where needed
 - [ ] All checks pass (`npm test`, `npm run lint`, `npm run format:check`, `npm run typecheck --workspaces`)
-- [ ] I have updated documentation as needed
+- [ ] I updated the documentation where needed

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   showInformationMessage: vi.fn(),
   showTextDocument: vi.fn(),
   executeCommand: vi.fn(),
+  appendLine: vi.fn(),
 }));
 
 vi.mock('vscode', () => ({
@@ -25,6 +26,10 @@ vi.mock('vscode', () => ({
     showInformationMessage: mocks.showInformationMessage,
     showTextDocument: mocks.showTextDocument,
     showOpenDialog: vi.fn(),
+    createOutputChannel: () => ({
+      appendLine: mocks.appendLine,
+      show: vi.fn(),
+    }),
   },
   commands: {
     executeCommand: mocks.executeCommand,
@@ -78,13 +83,17 @@ function shownDocuments(): string[] {
   );
 }
 
+function outputLines(): string[] {
+  return mocks.appendLine.mock.calls.map((call) => String(call[0]));
+}
+
 function executedCommands(): string[] {
   return mocks.executeCommand.mock.calls.map((call) => String(call[0]));
 }
 
-const SAME_WORDING =
-  'The model weighs the route on from here with a condition, ' +
-  'which the script leaves out.';
+const DROPPED = (id: string): string =>
+  `condition '\${ok}' on the route out of '${id}' was dropped\n` +
+  'note: when the condition is false, Operaton stops the original process with an error';
 
 type Expected = {
   info?: string[];
@@ -93,6 +102,8 @@ type Expected = {
   returns: string | undefined;
   shown?: string[];
   executed?: string[];
+  /** Lines written to the output channel, where note and help lines keep their own line. */
+  output?: string[];
 };
 
 type Row = readonly [
@@ -122,20 +133,40 @@ describe('conversion commands: what the author is shown', () => {
           {
             elementId: 'CheckStock',
             category: 'droppedCondition',
-            message: SAME_WORDING,
+            message: DROPPED('CheckStock'),
           },
           {
             elementId: 'ReserveGoods',
             category: 'droppedCondition',
-            message: SAME_WORDING,
+            message: DROPPED('ReserveGoods'),
+          },
+        ],
+        buildErrors: [
+          {
+            line: 2,
+            character: 0,
+            endLine: 2,
+            endCharacter: 4,
+            message: 'bad default\nnote: it is not an integer',
+            severity: 1,
+            text: 'done',
           },
         ],
       },
       {
         info: ['BPMNscript: Decompiled "example.bpmn" -> "example.bpmnscript"'],
         warning: [
-          'BPMNscript: "example.bpmn" reported 2 item(s) during decompile: ' +
-            `CheckStock: ${SAME_WORDING}; ReserveGoods: ${SAME_WORDING}`,
+          'BPMNscript: "example.bpmn" reported 2 item(s) during decompile.',
+          'BPMNscript: The script decompiled from "example.bpmn" has 1 compilation error(s) and needs hand-repair.',
+        ],
+        output: [
+          'BPMNscript: "example.bpmn" reported 2 item(s) during decompile.',
+          "  condition '${ok}' on the route out of 'CheckStock' was dropped\n" +
+            '    note: when the condition is false, Operaton stops the original process with an error',
+          "  condition '${ok}' on the route out of 'ReserveGoods' was dropped\n" +
+            '    note: when the condition is false, Operaton stops the original process with an error',
+          'BPMNscript: The script decompiled from "example.bpmn" has 1 compilation error(s) and needs hand-repair.',
+          '  line 3: bad default\n    note: it is not an integer',
         ],
         returns: '/tmp/example.bpmnscript',
         shown: ['/tmp/example.bpmnscript'],
@@ -148,12 +179,19 @@ describe('conversion commands: what the author is shown', () => {
       {
         ok: false,
         kind: 'unsupported',
-        message: 'multiple linked processes (pools and message flows).',
+        message:
+          "the file contains two executable processes ('a', 'b')\n" +
+          'note: BPMNscript imports one process',
       },
       {
         error: [
-          'BPMNscript: "example.bpmn" contains an unsupported construct: ' +
-            'multiple linked processes (pools and message flows).',
+          'BPMNscript: "example.bpmn" cannot be decompiled: ' +
+            "the file contains two executable processes ('a', 'b')",
+        ],
+        output: [
+          'BPMNscript: "example.bpmn" cannot be decompiled: ' +
+            "the file contains two executable processes ('a', 'b')",
+          '  note: BPMNscript imports one process',
         ],
         returns: undefined,
       },
@@ -203,8 +241,8 @@ describe('conversion commands: what the author is shown', () => {
       undefined,
       {
         warning: [
-          'BPMNscript: "example.bpmnscript" is not a .bpmn file; ' +
-            'use "Compile to BPMN" for it.',
+          'BPMNscript: "example.bpmnscript" is not a .bpmn file. ' +
+            'Use "Compile to BPMN" for it.',
         ],
         returns: undefined,
       },
@@ -272,11 +310,13 @@ describe('conversion commands: what the author is shown', () => {
       error = [],
       shown = [],
       executed = [],
+      output = [],
     } = expected;
     expect(returned?.fsPath).toBe(expected.returns);
     expect(notifications()).toEqual({ info, warning, error });
     expect(shownDocuments()).toEqual(shown);
     expect(executedCommands()).toEqual(executed);
+    expect(outputLines()).toEqual(output);
 
     const core = command === 'compile' ? compileDslToBpmn : decompileBpmnToDsl;
     expect(core).toHaveBeenCalledTimes(result === undefined ? 0 : 1);
@@ -324,6 +364,9 @@ describe('conversion commands: what reaches the disk', () => {
     );
 
     expect(returned?.fsPath).toBe(returns);
+    expect(notifications().warning).toEqual([
+      '"/tmp/example.bpmn" already exists. Overwrite?',
+    ]);
     expect(vscode.workspace.fs.writeFile).toHaveBeenCalledTimes(writes);
   });
 

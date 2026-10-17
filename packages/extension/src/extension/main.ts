@@ -12,13 +12,13 @@ import {
 } from './conversion.js';
 import { SidebarViewProvider } from './sidebar-view-provider.js';
 
-let client: LanguageClient;
+let client: LanguageClient | undefined;
 
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
   const extensionVersion = String(
-    (context.extension.packageJSON as { version?: string }).version ?? '0.0.1',
+    (context.extension.packageJSON as { version?: string }).version,
   );
 
   const decompile = decompileCommand();
@@ -47,17 +47,11 @@ export async function activate(
     vscode.window.onDidChangeActiveTextEditor(() => void provider.refresh()),
   );
 
-  // refresh() no-ops until the view exists.
-  void provider.refresh();
-
   client = await startLanguageClient(context);
 }
 
 export function deactivate(): Promise<void> | undefined {
-  if (client) {
-    return client.stop();
-  }
-  return undefined;
+  return client?.stop();
 }
 
 async function startLanguageClient(

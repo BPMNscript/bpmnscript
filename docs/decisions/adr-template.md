@@ -1,6 +1,6 @@
 ---
 # These are optional metadata elements. Feel free to remove any of them.
-status: '{proposed | rejected | accepted | deprecated | … | superseded by ADR-0123}'
+status: '{proposed | rejected | accepted | deprecated | ... | superseded by ADR-0123}'
 date: { YYYY-MM-DD when the decision was last updated }
 decision-makers: { list everyone involved in the decision }
 consulted:
@@ -25,26 +25,26 @@ informed:
 
 - {decision driver 1, for instance, a desired software quality, faced concern, constraint or force}
 - {decision driver 2}
-- … <!-- numbers of drivers can vary -->
+- ... <!-- numbers of drivers can vary -->
 
 ## Considered Options
 
 - {title of option 1}
 - {title of option 2}
 - {title of option 3}
-- … <!-- numbers of options can vary -->
+- ... <!-- numbers of options can vary -->
 
 ## Decision Outcome
 
-Chosen option: "{title of option 1}", because {justification. e.g., only option, which meets k.o. criterion decision driver | which resolves force {force} | … | comes out best (see below)}.
+Chosen option: "{title of option 1}", because {justification. e.g., only option, which meets k.o. criterion decision driver | which resolves force {force} | ... | comes out best (see below)}.
 
 <!-- This is an optional element. Feel free to remove. -->
 
 ### Consequences
 
-- Good, because {positive consequence, e.g., improvement of one or more desired qualities, …}
-- Bad, because {negative consequence, e.g., compromising one or more desired qualities, …}
-- … <!-- numbers of consequences can vary -->
+- Good, because {positive consequence, e.g., improvement of one or more desired qualities, ...}
+- Bad, because {negative consequence, e.g., compromising one or more desired qualities, ...}
+- ... <!-- numbers of consequences can vary -->
 
 <!-- This is an optional element. Feel free to remove. -->
 
@@ -60,7 +60,7 @@ Chosen option: "{title of option 1}", because {justification. e.g., only option,
 
 <!-- This is an optional element. Feel free to remove. -->
 
-{example | description | pointer to more information | …}
+{example | description | pointer to more information | ...}
 
 - Good, because {argument a}
 - Good, because {argument b}
@@ -69,16 +69,16 @@ Chosen option: "{title of option 1}", because {justification. e.g., only option,
 
 - Neutral, because {argument c}
 - Bad, because {argument d}
-- … <!-- numbers of pros and cons can vary -->
+- ... <!-- numbers of pros and cons can vary -->
 
 ### {title of other option}
 
-{example | description | pointer to more information | …}
+{example | description | pointer to more information | ...}
 
 - Good, because {argument a}
 - Neutral, because {argument b}
 - Bad, because {argument c}
-- …
+- ...
 
 <!-- This is an optional element. Feel free to remove. -->
 

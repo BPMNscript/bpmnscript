@@ -1,19 +1,16 @@
 # Contributing to BPMNscript
 
 > This project is being developed as part of a bachelor's thesis.
-> External contributions are not accepted until after thesis submission.
 > Bug reports are welcome now.
-> Pull requests are welcome after submission.
-> The guidelines below will apply once the project opens up.
+> Pull requests are accepted after the thesis is submitted, and the guidelines below apply from then on.
 
 ## Development setup
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) >= 22 (the project uses Node 24 via `.nvmrc`; [nvm](https://github.com/nvm-sh/nvm)'s `nvm use` reads it)
-  `.nvmrc` pins `24.19.0` because 24.20.0 and 24.21.0 fail `langium generate` with `ERR_INVALID_URL`; move it back to `24` once a later 24.x generates cleanly.
-- [VS Code](https://code.visualstudio.com/) with the recommended extensions (VS Code will prompt you on first open)
-- [Docker](https://www.docker.com/) for end-to-end tests (alternatives: [Podman](https://podman.io/), [Rancher Desktop](https://rancherdesktop.io/))
+- [Node.js](https://nodejs.org/) 22 or newer (`.nvmrc` pins Node 24, and `nvm use` reads it)
+- [VS Code](https://code.visualstudio.com/) with the recommended extensions, which VS Code offers on first open
+- [Docker](https://www.docker.com/) for the end-to-end tests ([Podman](https://podman.io/) or [Rancher Desktop](https://rancherdesktop.io/) work too)
 
 ### Getting started
 
@@ -25,9 +22,9 @@ npm run build
 npm test
 ```
 
-`npm run build` runs the Langium code generator and compiles TypeScript across all packages.
-`npm test` runs the full test suite including Docker-based end-to-end tests.
-To skip those (no Docker installed, or just iterating on unit tests):
+`npm run build` runs the Langium code generator, compiles TypeScript across all packages, and bundles the extension.
+`npm test` runs the full suite, including end-to-end tests that deploy to an Operaton engine in Docker.
+To skip those, for example without Docker or while iterating on unit tests:
 
 ```sh
 SKIP_DOCKER_TESTS=true npm test
@@ -36,31 +33,21 @@ SKIP_DOCKER_TESTS=true npm test
 ### Trying it out in VS Code
 
 After building, press <kbd>F5</kbd> in VS Code.
-This opens a second VS Code window with the BPMNscript extension loaded.
-In that window you can create or open `.bpmnscript` files and get syntax highlighting, inline diagnostics, autocompletion, hover, and rename.
-To compile or decompile a file, use the command palette (`BPMNscript: Compile to BPMN` / `BPMNscript: Decompile to BPMNscript`) or the "Convert" panel in the BPMNscript activity-bar sidebar.
-The CLI alternative (`npx bpmns build <file>`) still works if you prefer the terminal.
-For a normal install instead of the development host, see [packages/extension/README.md](packages/extension/README.md#installing).
+A second window opens with the extension loaded, where you can open `.bpmnscript` files and convert them from the command palette or the Convert panel in the BPMNscript sidebar.
+[packages/extension/README.md](packages/extension/README.md) describes what the extension does and how to install it.
 
 ### Editing the grammar
 
-The Langium grammar lives at `packages/language/src/bpmn-script.langium`.
-After editing it, regenerate the AST types before TypeScript can see the changes:
+The Langium grammar is `packages/language/src/bpmn-script.langium`.
+After editing it, regenerate the AST types from the repo root so TypeScript sees the change:
 
 ```sh
-npm run langium:generate
+npm run langium:generate   # once
+npm run langium:watch      # on every save
 ```
 
-For continuous regeneration while editing:
-
-```sh
-npm run langium:watch
-```
-
-Both commands run from the repo root.
-
-The generated AST types land under `src/generated/`, which is git-ignored, so there is nothing to commit after regenerating.
-CI's build job still runs `git diff --exit-code` right after `npm run build`; that step fails if the build leaves any tracked file changed, not because of the generated output.
+The generated code lands in `src/generated/`, which is git-ignored, so there is nothing to commit.
+CI runs `git diff --exit-code` after `npm run build` and fails if the build changed any tracked file.
 
 ### Running tests
 
@@ -73,26 +60,49 @@ npm test --workspace packages/extension                                      # E
 FUZZ_N=2000 FUZZ_OUT=/tmp/fuzz npm test --workspace tests -- fuzz.test.ts    # Round-trip fuzz over 2000 generated programs
 ```
 
-`npm test` runs the round-trip fuzz over the first 200 generated programs as part of the tests workspace.
-The extension tests require `@bpmn-script/language` and `@bpmn-script/transform` to be built first (they are consumed as compiled `out/` directories).
-Run `npm run build` from the repo root before running the extension suite in isolation.
+`npm test` includes the round-trip fuzz over the first 200 generated programs.
+The extension tests use the compiled `out/` directories of `@bpmn-script/language` and `@bpmn-script/transform`, so run `npm run build` before running that suite on its own.
 
 ### Code style
 
-The project uses [Prettier](https://prettier.io/) for formatting and [ESLint](https://eslint.org/) (via `eslint-plugin-bpmn-io`) for linting.
-Both run from the repo root:
+[Prettier](https://prettier.io/) formats and [ESLint](https://eslint.org/) lints, both run from the repo root:
 
 ```sh
-npm run format                    # Auto-format all source files
-npm run format:check              # Check formatting without writing (used in CI)
-npm run lint                      # Run ESLint
-npm run typecheck --workspaces    # Typecheck test sources; vitest does not (used in CI)
+npm run format                    # Format all source files
+npm run format:check              # Check formatting without writing (CI)
+npm run lint                      # Run ESLint (does not check formatting)
+npm run typecheck --workspaces    # Typecheck the test files, which vitest does not (CI)
 ```
 
-Formatting happens on save if you use VS Code with the recommended Prettier extension.
-The `.editorconfig` handles basics (indentation, line endings) for other editors.
+VS Code with the recommended Prettier extension formats on save, and `.editorconfig` covers indentation and line endings for other editors.
 
-## Guidelines (post-thesis)
+### Diagnostic messages
+
+Every message a user sees from the compiler, the editor, or the CLI has the same shape.
+
+- The first line is a short headline that says what is wrong and where, and stands on its own.
+  It never says how to fix it.
+- The headline starts in lowercase, unless it opens with a quoted name, and has no final period.
+- Optional lines follow, each starting with `note: ` for context (why it matters, what the engine does) or `help: ` for a concrete fix the user can make.
+  Each line holds one fact, in lowercase after the prefix and without a final period.
+  A line is never a question.
+- No semicolons anywhere in a message, and no "the following" or "as shown".
+- Use plain words that are still technically exact.
+  Name an engine class or method only when it explains the cause, and then in a `note:` line.
+- Put code and names in single quotes.
+
+```
+'emit message Notify' sends nothing without a 'class', 'expression', 'delegate', or 'topic'
+```
+
+```
+the condition must be boolean, but it is a string
+note: the engine throws 'condition expression returns non-Boolean' when it evaluates it
+```
+
+The language package builds these with `diagnosticText` in `packages/language/src/vocabulary.ts`.
+
+## Guidelines
 
 ### Reporting bugs
 
@@ -104,12 +114,11 @@ Use the [feature request template](https://github.com/BPMNscript/bpmnscript/issu
 
 ### Pull requests
 
-- Reference the related issue with `Closes #...`
-- Include a brief description of what changed and why
-- Make sure `npm test`, `npm run lint`, `npm run format:check`, and `npm run typecheck --workspaces` all pass
-- Update `CHANGELOG.md` if the change is user-facing
+- Reference the related issue with `Closes #...`.
+- Describe what changed and why.
+- Make sure `npm test`, `npm run lint`, `npm run format:check`, and `npm run typecheck --workspaces` all pass.
 
 ### Architectural decisions
 
-Non-trivial technical decisions are documented as [Markdown ADRs](docs/decisions/) using [MADR 4.0.0](https://adr.github.io/madr/).
-If your change involves an architectural decision, include a new ADR.
+Technical decisions are recorded as [Markdown ADRs](docs/decisions/) using [MADR 4.0.0](https://adr.github.io/madr/).
+If your change makes an architectural decision, add an ADR for it.

@@ -33,13 +33,12 @@ const RESERVED_WORDS_BY_GRAMMAR = new WeakMap<Grammar, ReadonlySet<string>>();
 export function reservedWordsOf(grammar: Grammar): ReadonlySet<string> {
   let words = RESERVED_WORDS_BY_GRAMMAR.get(grammar);
   if (!words) {
-    const found = new Set<string>();
-    for (const node of AstUtils.streamAllContents(grammar)) {
-      if (GrammarAST.isKeyword(node) && /^[A-Za-z_]/.test(node.value)) {
-        found.add(node.value);
-      }
-    }
-    words = found;
+    words = new Set(
+      AstUtils.streamAllContents(grammar)
+        .filter(GrammarAST.isKeyword)
+        .map((keyword) => keyword.value)
+        .filter((value) => /^[A-Za-z_]/.test(value)),
+    );
     RESERVED_WORDS_BY_GRAMMAR.set(grammar, words);
   }
   return words;
@@ -56,6 +55,17 @@ export function formatPlainWordList(
 
 export function formatWordList(words: readonly string[]): string {
   return formatPlainWordList(words.map((w) => `'${w}'`));
+}
+
+/**
+ * A diagnostic: a headline, then `note: ...` and `help: ...` lines, one fact
+ * each. The wording rules are in CONTRIBUTING.md under "Diagnostic messages".
+ */
+export function diagnosticText(
+  headline: string,
+  ...details: ReadonlyArray<string | false | undefined>
+): string {
+  return [headline, ...details.filter((line) => !!line)].join('\n');
 }
 
 /** The flags that create a continuation job. */
@@ -130,7 +140,7 @@ export const BOOLEAN_SETTING_KEYS: ReadonlySet<string> = new Set(
  */
 export const RUN_ENGINE_KEYS: readonly string[] = ENGINE_KEYS.filter(
   (key) => key !== 'jobPriority',
-).map((key) => runSettingKey(key));
+).map(runSettingKey);
 
 /** `parseServiceTaskLike` dispatches on this before any code attribute. */
 export const TYPE_BINDING_KEY = 'type';
@@ -265,7 +275,23 @@ export const CALL_BINDING_VALUES = ['latest', 'deployment'] as const;
 
 export type CallBindingValue = (typeof CALL_BINDING_VALUES)[number];
 
-const LABEL_KEYS = ['label', 'documentation'] as const;
+/** Always the element's own documentation, never a value's. */
+export const DOCUMENTATION_KEY = 'documentation';
+
+/**
+ * Documents a value, wherever it is written. Each key is named for the word
+ * that introduces the value: a timer, any condition (`if`, `while`, `until`,
+ * the `condition` trigger), the count and the `each` variable of a `for`
+ * clause.
+ */
+export const VALUE_DOCUMENTATION_KEYS = {
+  timer: 'timerDocumentation',
+  condition: 'conditionDocumentation',
+  count: 'countDocumentation',
+  each: 'eachDocumentation',
+} as const;
+
+const LABEL_KEYS = ['label', DOCUMENTATION_KEY] as const;
 
 export const PROCESS_ENGINE_HEADER_KEYS = [
   'versionTag',
@@ -295,15 +321,17 @@ export const IO_DIRECTIONS: readonly string[] = [
   OUTPUT_DIRECTION,
 ];
 
+export const USER_TASK_DUE_DATE_KEYS = ['dueDate', 'followUpDate'] as const;
+export const USER_TASK_PRIORITY_KEY = 'priority';
+
 /** Written verbatim as the `operaton:` attribute of the same name, in print order. */
 export const USER_TASK_VERBATIM_KEYS = [
   'assignee',
   'formKey',
   'candidateGroups',
   'candidateUsers',
-  'dueDate',
-  'followUpDate',
-  'priority',
+  ...USER_TASK_DUE_DATE_KEYS,
+  USER_TASK_PRIORITY_KEY,
 ] as const;
 
 /** Set once on the bound implementation; reads and writes no process variable. */
@@ -326,6 +354,12 @@ export const EXTERNAL_TASK_EL_NAME = 'externalTask';
 
 export const ERROR_MAPPING_HEAD = 'error';
 export const ERROR_MAPPING_WHEN = 'when';
+
+/**
+ * `else fail` closes a split whose every branch is conditioned with no
+ * fallback; the TextMate grammar spells it too (`textmate-postprocess.mjs`).
+ */
+export const ELSE_FAIL_WORD = 'fail';
 
 export type TimerKind = 'duration' | 'date' | 'cycle';
 
@@ -444,14 +478,41 @@ export const FORM_CONSTRAINT_TYPES: Readonly<
  */
 export const FORM_BOUND_TEXT = /^-?\d+$/;
 
-export const ID_TERMINAL: RegExp = GrammarUtils.terminalRegex(
-  BpmnScriptGrammar().rules.find(
-    (rule): rule is GrammarAST.TerminalRule =>
-      GrammarAST.isTerminalRule(rule) && rule.name === 'ID',
-  )!,
-);
+function terminalNamed(name: string): RegExp {
+  return GrammarUtils.terminalRegex(
+    BpmnScriptGrammar().rules.find(
+      (rule): rule is GrammarAST.TerminalRule =>
+        GrammarAST.isTerminalRule(rule) && rule.name === name,
+    )!,
+  );
+}
+
+export const ID_TERMINAL: RegExp = terminalNamed('ID');
+
+export const QUOTED_NAME_TERMINAL: RegExp = terminalNamed('QUOTED_NAME');
 
 export const ID_TEXT = new RegExp(`^${ID_TERMINAL.source}$`, ID_TERMINAL.flags);
+
+/** Lexes as `ID` rather than a keyword, so a `Name` needs no backticks. */
+export function isPlainName(text: string): boolean {
+  return ID_TEXT.test(text) && !reservedWordsOf(BpmnScriptGrammar()).has(text);
+}
+
+/** The `QUOTED_NAME` escape: a backslash takes the next character literally. */
+export function printName(text: string): string {
+  return isPlainName(text) ? text : `\`${text.replace(/[`\\]/g, '\\$&')}\``;
+}
+
+export function unquoteName(quoted: string): string {
+  return quoted.slice(1, -1).replace(/\\(.)/g, '$1');
+}
+
+/**
+ * An id both ends accept: moddle drops an element whose id is not ASCII
+ * letters, digits, `_`, `-` and `.` after a letter or `_`, and Operaton
+ * validates against `BPMN20.xsd`, whose `xsd:ID` admits no `:`.
+ */
+export const ENGINE_ID_TEXT = /^[A-Za-z_][\w.-]*$/;
 
 /**
  * `StringUtil.isExpression`: an opening at the start only. An opening further
@@ -767,7 +828,13 @@ function withKeys(
     keys: new Set([
       ...ENGINE_KEYS,
       ...rule.own,
-      ...(rule.repeats ? RUN_ENGINE_KEYS : []),
+      ...(rule.repeats
+        ? [
+            ...RUN_ENGINE_KEYS,
+            VALUE_DOCUMENTATION_KEYS.count,
+            VALUE_DOCUMENTATION_KEYS.each,
+          ]
+        : []),
     ]),
   };
 }

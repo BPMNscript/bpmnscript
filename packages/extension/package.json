@@ -1,7 +1,7 @@
 {
   "name": "vscode-bpmnscript",
   "description": "VS Code extension for BPMNscript, bundling the Langium language server",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "displayName": "BPMNscript",
   "publisher": "bpmnscript",
   "license": "Apache-2.0",
@@ -101,9 +101,9 @@
   },
   "main": "./out/extension/main.cjs",
   "scripts": {
-    "clean": "shx rm -fr *.tsbuildinfo out syntaxes",
+    "clean": "node -e \"for (const f of [...fs.globSync('*.tsbuildinfo'), 'out', 'syntaxes']) fs.rmSync(f, { recursive: true, force: true })\"",
     "vscode:prepublish": "npm run build",
-    "build:prepare": "shx mkdir -p ./syntaxes/ && shx cp -f ../language/syntaxes/bpmn-script.tmLanguage.json ./syntaxes/bpmn-script.tmLanguage.json && shx cp -f ./injection/bpmn-script.injection.tmLanguage.json ./syntaxes/bpmn-script.injection.tmLanguage.json && shx cp -f ../../LICENSE ./LICENSE && shx cp -f ../../CHANGELOG.md ./CHANGELOG.md",
+    "build:prepare": "node -e \"fs.cpSync('../language/syntaxes/bpmn-script.tmLanguage.json', 'syntaxes/bpmn-script.tmLanguage.json'); fs.cpSync('injection/bpmn-script.injection.tmLanguage.json', 'syntaxes/bpmn-script.injection.tmLanguage.json'); fs.cpSync('../../LICENSE', 'LICENSE')\"",
     "build": "npm run build:prepare && tsc -b tsconfig.json && node esbuild.mjs",
     "build:post": "npm run build:prepare && node esbuild.mjs",
     "build:clean": "npm run clean && npm run build",
@@ -113,16 +113,17 @@
     "package": "vsce package"
   },
   "dependencies": {
-    "@bpmn-script/language": "0.0.1",
-    "@bpmn-script/transform": "0.0.1",
-    "vscode-languageclient": "~10.1.1"
+    "@bpmn-script/language": "0.1.0",
+    "@bpmn-script/transform": "0.1.0",
+    "langium": "^4.4.0",
+    "vscode-languageclient": "~10.1.2"
   },
   "devDependencies": {
     "@types/vscode": "~1.134.0",
     "@vscode/vsce": "^4.0.0",
-    "concurrently": "^10.0.5",
+    "concurrently": "^10.0.6",
     "esbuild": "~0.28.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.5"
   },
   "vsce": {
     "dependencies": false

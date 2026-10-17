@@ -47,6 +47,7 @@ import type {
   BpmnProcess,
   ExecutionListener,
   FieldInjection,
+  FlowContainer,
   FlowElement,
   FormField,
   JobSettings,
@@ -114,9 +115,9 @@ async function reDesugar(dsl: string): Promise<BpmnProcess> {
 
 // Errors the model itself draws; a fixture feeding one names it.
 const MODEL_REFUSAL = {
-  mintedId: 'is the id the compiler generates for the implicit',
-  orphanStep: 'This step can never run',
-  deadElse: 'could never run',
+  mintedId: 'is the id generated for the implicit',
+  orphanStep: 'this step can never run',
+  deadElse: "this 'else' branch can never run",
 } as const;
 
 // Re-parsing alone accepts a statement a printed jump cut off.
@@ -498,9 +499,7 @@ describe('irToDsl: event layer', () => {
 `,
     );
   });
-});
 
-describe('irToDsl: event layer (message / signal / timer / conditional)', () => {
   it('prints the implementation a thrown or emitted message carries', async () => {
     const thrown = minimalProcess(
       [
@@ -725,7 +724,7 @@ describe('irToDsl: synthesized terminal omission', () => {
   );
 });
 
-describe('irToDsl: ids the script cannot spell print under a minted name', () => {
+describe('irToDsl: ids the plain form cannot spell print in backticks', () => {
   const ir = processIr(
     'WFP-6-',
     [
@@ -733,7 +732,7 @@ describe('irToDsl: ids the script cannot spell print under a minted name', () =>
       user('Task.1'),
       user('user'),
       chainedSub('Sub.1', [start('S2'), task('Step.2'), end('E2')]),
-      typedEvent('intermediateThrowEvent', 'Notify.1', messageDef('M')),
+      typedEvent('intermediateThrowEvent', 'Notify.1', signalDef('M')),
       user('Review-'),
       end('E'),
       boundaryEvent('B', 'Task.1', timerDef('duration', 'PT1H')),
@@ -744,39 +743,49 @@ describe('irToDsl: ids the script cannot spell print under a minted name', () =>
     ],
   );
 
-  it('prints every site under the minted name, reports each rename once, and the source compiles clean', async () => {
+  it('prints every site in backticks, reports nothing, and the source compiles back to the same ids', async () => {
     const { source, warnings } = printDsl(ir);
     expect(source).toBe(
-      `process WFP_6_ {
+      `process \`WFP-6-\` {
   start S
-  user Task_1
-  user _user
-  subprocess Sub_1 {
+  user \`Task.1\`
+  user \`user\`
+  subprocess \`Sub.1\` {
     start S2
-    step Step_2
+    step \`Step.2\`
     end E2
   }
-  emit message Notify_1("M")
-  user Review_
+  emit signal \`Notify.1\`("M")
+  user \`Review-\`
   end E
-  on Task_1: timer("PT1H") {
-    goto Review_
+  on \`Task.1\`: timer("PT1H") {
+    goto \`Review-\`
   }
 }
 `,
     );
-    expectReports(
-      warnings,
-      ['renamedId', 'WFP-6-'],
-      ['renamedId', 'Task.1'],
-      ['renamedId', 'user'],
-      ['renamedId', 'Sub.1'],
-      ['renamedId', 'Step.2'],
-      ['renamedId', 'Notify.1'],
-      ['renamedId', 'Review-'],
-    );
+    expect(warnings).toEqual([]);
     expect((await validate(source)).diagnostics).toEqual([]);
-    expect((await reDesugar(source)).id).toBe('WFP_6_');
+    const rebuilt = await reDesugar(source);
+    const ids = (container: FlowContainer): string[] =>
+      container.flowElements.flatMap((el) => [
+        el.id,
+        ...('flowElements' in el ? ids(el) : []),
+      ]);
+    expect([rebuilt.id, ...ids(rebuilt)]).toEqual([
+      'WFP-6-',
+      'S',
+      'Task.1',
+      'user',
+      'Sub.1',
+      'S2',
+      'Step.2',
+      'E2',
+      'Notify.1',
+      'Review-',
+      'E',
+      'Boundary_Task.1_timer',
+    ]);
   });
 });
 
@@ -1057,7 +1066,7 @@ describe('irToDsl: a loop head whose exit is listed before its route into the bo
         '  } else if (n > 100) {',
         '    user T',
         `    ${marker}`,
-        '  }',
+        '  } else fail',
         '  user A',
         '  end EA',
       ],
@@ -1074,7 +1083,8 @@ describe('irToDsl: a loop head whose exit is listed before its route into the bo
         '    end EA',
         '  } else if (n > 100) {',
         '    goto T',
-        '  }',
+        '  } else if (y > 1) {',
+        '  } else fail',
         '  user B',
         '  end EB',
         '  user T',
@@ -1106,7 +1116,7 @@ describe('irToDsl: a loop head whose exit is listed before its route into the bo
     expect(bodyOf(source)).toBe(
       ['process p {', '  start S', ...body, '}', ''].join('\n'),
     );
-    expectReports(warnings, ['inventedFallback', 'L'], ['droppedEdge', 'L']);
+    expectReports(warnings, ['droppedEdge', 'L']);
     const second = irToDsl(await reDesugar(await printed(ir)));
     const withoutMarker = bodyOf(source)
       .split('\n')
@@ -1274,7 +1284,7 @@ describe('irToDsl: a split inside a loop body whose every route is conditioned',
 
   const loopHead = (declared: string): string =>
     `process p {\n${declared}  start S\n  do {\n    user Approve\n`;
-  const loopTail = '    }\n' + '  } while (clarified)\n';
+  const loopTail = '    } else fail\n' + '  } while (clarified)\n';
   const reviewBranch = '    } else if (!approved) {\n' + '      user Review\n';
 
   it.each([
@@ -1328,44 +1338,10 @@ describe('irToDsl: a split inside a loop body whose every route is conditioned',
   ])('%s', async (_title, ir, expected) => {
     const { source, warnings } = printDsl(ir);
     expect(source).toBe(expected);
-    expectReports(
-      warnings,
-      ['inventedFallback', 'G1'],
-      ['droppedFlowCondition', 'G2'],
-    );
+    expectReports(warnings, ['droppedFlowCondition', 'G2']);
     await printed(ir);
   });
 });
-
-// A jump into one-way gateway `G` forwards through it to `R`.
-const passThroughIr = (
-  kind: 'exclusiveGateway' | 'inclusiveGateway' | 'eventBasedGateway',
-  id = 'G',
-): BpmnProcess =>
-  minimalProcess(
-    [start('S'), user('A'), { kind, id }, user('R'), end('E')],
-    [...chain('S', 'A', 'E'), edge('A', id), edge(id, 'R'), edge('R', 'E')],
-  );
-
-const PASS_THROUGH_IR = passThroughIr('exclusiveGateway', 'Gateway_p_9_join');
-
-// Hostile input: a back edge into a parallel fork, which no goto can name.
-const GOTO_INTO_FORK_IR: BpmnProcess = minimalProcess(
-  [
-    start('S'),
-    { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
-    user('A'),
-    user('B'),
-    end('E'),
-  ],
-  [
-    edge('S', 'Gateway_p_1_fork', { id: 'f0' }),
-    edge('Gateway_p_1_fork', 'A', { id: 'f1' }),
-    edge('Gateway_p_1_fork', 'B', { id: 'f2' }),
-    edge('A', 'E', { id: 'f3' }),
-    edge('B', 'Gateway_p_1_fork', { id: 'f4' }),
-  ],
-);
 
 function formBlockLines(dsl: string): string[] {
   const lines = dsl.split('\n');
@@ -2081,6 +2057,7 @@ describe('irToDsl: repeated activities', () => {
     ],
     [{ collection: 'lines' }, 'for each in lines'],
     [{ collection: 'check-close' }, 'for each in check-close'],
+    [{ collection: 'var' }, 'for each in "var"'],
     [
       { collection: '${order.lines}', elementVariable: 'line' },
       'for each line in "${order.lines}"',
@@ -2253,16 +2230,16 @@ const REPORT = {
   label: { category: 'label', says: ['block structure'] },
   documentation: {
     category: 'documentation',
-    says: ['block structure', 'carry it'],
-    never: ['The label'],
+    says: ['block structure', 'carries it'],
+    never: ['label'],
   },
   refusedStatement: {
     category: 'refusedStatement',
-    says: ['draws an error', 'Rename the step in the model'],
+    says: ['draws an error', 'rename the step in the model'],
   },
   droppedEdge: {
     category: 'droppedEdge',
-    says: ['unstructured region', 'hand-repair'],
+    says: ['left out of the script', 'hand-repair'],
   },
   degradedSplit: {
     category: 'degradedSplit',
@@ -2280,29 +2257,25 @@ const REPORT = {
   crossBranchJump: {
     category: 'refusedStatement',
     says: ['crosses', 'draws an error'],
-    never: ['Rename the step'],
-  },
-  inventedFallback: {
-    category: 'defaultFlow',
-    says: ['names no fallback', 'what runs changes'],
+    never: ['rename the step'],
   },
   raceCondition: {
     category: 'droppedCondition',
     says: [
-      'weighs a branch of this wait',
+      'on a branch of',
       'takes the first to resolve',
       'the run is the same without it',
     ],
-    never: ['stops the run with an error'],
+    never: ['stops the original process'],
   },
   droppedFlowCondition: {
     category: 'droppedCondition',
-    says: ['stops the run with an error', 'carries straight on'],
+    says: ['stops the original process with an error', 'always continues'],
   },
   divertedRun: {
     category: 'droppedCondition',
-    says: ['leaves by another route'],
-    never: ['stops the run with an error'],
+    says: ['takes the fallback'],
+    never: ['stops the original process'],
   },
   unweighedBranch: {
     category: 'droppedCondition',
@@ -2311,12 +2284,12 @@ const REPORT = {
   },
   forkFallbackCondition: {
     category: 'defaultFlow',
-    says: ['weighs the fallback', 'the run is the same without it'],
+    says: ['on the fallback', 'the run is the same without it'],
     never: ['stops the run'],
   },
   choiceFallbackCondition: {
     category: 'defaultFlow',
-    says: ['weighs the fallback', 'refuses to deploy'],
+    says: ['on the fallback', 'refuses to deploy'],
     never: ['the run is the same without it'],
   },
   deadFallback: {
@@ -2327,10 +2300,6 @@ const REPORT = {
     category: 'droppedSetting',
     says: ['engine settings', 'block structure', 'runs without them'],
   },
-  renamedId: {
-    category: 'renamedId',
-    says: ['written as', 'activity id'],
-  },
 } as const satisfies Record<
   string,
   {
@@ -2340,7 +2309,7 @@ const REPORT = {
   }
 >;
 
-const JARGON = ['flow node', 'gateway', 'token', 'sequence flow'];
+const JARGON = ['flow node', 'token', 'sequence flow'];
 
 function expectReports(
   warnings: readonly PrintWarning[],
@@ -2730,7 +2699,7 @@ describe('irToDsl: a jump into a branch of a fork or a race', () => {
         '        user A\n' +
         '      } else if (b) {\n' +
         '        user B\n' +
-        '      }\n' +
+        '      } else fail\n' +
         '    }\n' +
         '    {\n' +
         '      goto B\n' +
@@ -2739,11 +2708,7 @@ describe('irToDsl: a jump into a branch of a fork or a race', () => {
         '  end E\n' +
         '}\n',
     );
-    expectReports(
-      warnings,
-      ['inventedFallback', 'X'],
-      ['crossBranchJump', 'B'],
-    );
+    expectReports(warnings, ['crossBranchJump', 'B']);
     const errors = (await validate(source)).diagnostics
       .filter((d) => d.severity === 1)
       .map((d) =>
@@ -3367,20 +3332,14 @@ describe('irToDsl: conditioned parallel branches', () => {
       [],
     ],
     [
-      'reports the fallback it had to invent when the model names none, which the source lowers to',
+      "closes a fork whose every branch is conditioned and whose model names no fallback with 'else fail', and reports nothing",
       inclusiveIr('all-conditioned'),
       block(
         '  var amount: any\n  var urgent: any\n',
-        '    if (urgent) {\n      user Record\n    }\n',
+        '    if (urgent) {\n      user Record\n    }\n    else fail\n',
       ),
-      [['inventedFallback', 'Gateway_p_1_fork']],
-      {
-        ...inclusiveIr('all-conditioned'),
-        sequenceFlows: [
-          ...inclusiveIr('all-conditioned').sequenceFlows,
-          edge('Gateway_p_1_fork', 'Gateway_p_1_join'),
-        ],
-      },
+      [],
+      inclusiveIr('all-conditioned'),
       [],
     ],
     [
@@ -3463,8 +3422,9 @@ describe('irToDsl: conditioned parallel branches', () => {
 });
 
 describe('irToDsl: a split left with nowhere to go when no condition holds', () => {
-  // Operaton tries an exclusive split's routes in document order, so only the
-  // last one may print as the fall-through and give up its condition.
+  // Operaton stops the run there, so every route keeps its condition and the
+  // split closes with `else fail`; the route the block continues at prints as
+  // an empty branch.
   const invoiceIr = (
     approval: [condition: string, target: string][],
   ): BpmnProcess =>
@@ -3499,7 +3459,7 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
     ]
   >([
     [
-      'overlapping conditions keep their order: the first keeps its condition and the last falls through',
+      'overlapping conditions keep their order, and the last continues after the block behind an empty branch',
       minimalProcess(
         [start('S'), gateway('G'), user('A'), user('B'), end('EA'), end('EB')],
         [
@@ -3515,14 +3475,15 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
         '  if (x > 1) {',
         '    user A',
         '    end EA',
-        '  }',
+        '  } else if (x > 5) {',
+        '  } else fail',
         '  user B',
         '  end EB',
       ],
-      [['inventedFallback', 'G']],
+      [],
     ],
     [
-      'an approval listed before its review falls through to the review',
+      'an approval listed before its review continues at the review',
       invoiceIr([
         ['${approved}', 'Pay'],
         ['${!approved}', 'Review'],
@@ -3533,22 +3494,19 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
         '  if (approved) {',
         '    user Pay',
         '    end E1',
-        '  }',
+        '  } else if (!approved) {',
+        '  } else fail',
         '  user Review',
         '  if (!clarified) {',
         '    end E2',
         '  } else if (clarified) {',
-        '    goto Approve',
-        '  }',
-        '  goto E1',
+        '  } else fail',
+        '  goto Approve',
       ],
-      [
-        ['inventedFallback', 'G'],
-        ['inventedFallback', 'G2'],
-      ],
+      [],
     ],
     [
-      'an approval listed after its review falls through to the approval',
+      'an approval listed after its review continues at the approval',
       invoiceIr([
         ['${!approved}', 'Review'],
         ['${approved}', 'Pay'],
@@ -3562,15 +3520,13 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
         '      end E2',
         '    } else if (clarified) {',
         '      goto Approve',
-        '    }',
-        '  }',
+        '    } else fail',
+        '  } else if (approved) {',
+        '  } else fail',
         '  user Pay',
         '  end E1',
       ],
-      [
-        ['inventedFallback', 'G'],
-        ['inventedFallback', 'G2'],
-      ],
+      [],
     ],
     [
       'a last route into a step reached from elsewhere keeps its condition behind an empty first branch',
@@ -3602,13 +3558,13 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
         '  if (a) {',
         '  } else if (b) {',
         '    goto B',
-        '  }',
+        '  } else fail',
         '  user A',
         '  end EA',
         '  user B',
         '  end EB',
       ],
-      [['inventedFallback', 'G']],
+      [],
     ],
   ])('%s', async (_, ir, body, reports) => {
     const { source, warnings } = printDsl(ir);
@@ -3733,11 +3689,21 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
 
     expect(source).toContain('while (again) {');
     expectReports(warnings, ['degradedSplit', 'Review']);
+    expect(warnings[0]!.message.split('\n')[0]).toBe(
+      "element 'Review' was printed as jumps and its split was lost",
+    );
     await printed(ir);
   });
 
-  it('says nothing about an invented fallback at a fork that opens every branch', () => {
-    const { warnings } = printDsl(
+  it.each<
+    [
+      title: string,
+      ir: BpmnProcess,
+      reports: (readonly [keyof typeof REPORT, string])[],
+    ]
+  >([
+    [
+      'says nothing about an invented fallback at a fork that opens every branch',
       minimalProcess(
         [
           start('S'),
@@ -3755,24 +3721,19 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
           ...chain('Record', 'Gateway_p_1_join', 'E'),
         ],
       ),
-    );
-
-    expectReports(warnings, ['unweighedBranch', 'Gateway_p_1_fork']);
-  });
-
-  it('reports the refusal alone when the one route the loop leaves is the weighed fallback itself', () => {
-    const { warnings } = printDsl(
+      [['unweighedBranch', 'Gateway_p_1_fork']],
+    ],
+    [
+      'reports the refusal alone when the one route the loop leaves is the weighed fallback itself',
       loopIntoSplitIr(
         gateway('Pick', 'Flow_settled'),
         {},
-        {
-          id: 'Flow_settled',
-          condition: '${settled}',
-        },
+        { id: 'Flow_settled', condition: '${settled}' },
       ),
-    );
-
-    expectReports(warnings, ['choiceFallbackCondition', 'Pick']);
+      [['choiceFallbackCondition', 'Pick']],
+    ],
+  ])('%s', (_title, ir, reports) => {
+    expectReports(printDsl(ir).warnings, ...reports);
   });
 });
 
@@ -3942,6 +3903,35 @@ describe('irToDsl: gateway settings', () => {
     flowChain('S', 'G', 'A', 'E'),
   );
 
+  // A jump into the one-way merge forwards through it to `R`.
+  const PASS_THROUGH_IR: BpmnProcess = minimalProcess(
+    [start('S'), user('A'), gateway('Gateway_p_9_join'), user('R'), end('E')],
+    [
+      ...chain('S', 'A', 'E'),
+      edge('A', 'Gateway_p_9_join'),
+      edge('Gateway_p_9_join', 'R'),
+      edge('R', 'E'),
+    ],
+  );
+
+  // Hostile input: a back edge into a parallel fork, which no goto can name.
+  const GOTO_INTO_FORK_IR: BpmnProcess = minimalProcess(
+    [
+      start('S'),
+      { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
+      user('A'),
+      user('B'),
+      end('E'),
+    ],
+    [
+      edge('S', 'Gateway_p_1_fork', { id: 'f0' }),
+      edge('Gateway_p_1_fork', 'A', { id: 'f1' }),
+      edge('Gateway_p_1_fork', 'B', { id: 'f2' }),
+      edge('A', 'E', { id: 'f3' }),
+      edge('B', 'Gateway_p_1_fork', { id: 'f4' }),
+    ],
+  );
+
   it.each([
     [
       'a one-way split the flow walks through',
@@ -3950,13 +3940,10 @@ describe('irToDsl: gateway settings', () => {
       [['droppedSetting', 'G']],
     ],
     [
-      'a merge a jump forwards through',
+      'a merge a branch runs through',
       PASS_THROUGH_IR,
       'Gateway_p_9_join',
-      [
-        ['degradedSplit', 'A'],
-        ['droppedSetting', 'Gateway_p_9_join'],
-      ],
+      [['droppedSetting', 'Gateway_p_9_join']],
     ],
     [
       'a fork degraded to jumps',
@@ -3979,4 +3966,208 @@ describe('irToDsl: gateway settings', () => {
       expectReports(warnings, ...reports);
     },
   );
+});
+
+describe('irToDsl: splits whose routes reconverge on a step that is already printed or ends a loop body', () => {
+  const route = (from: string, to: string, condition?: string): SequenceFlow =>
+    edge(from, to, condition === undefined ? {} : { condition });
+  // `W` loops through `B`, then a split reaches `W` again.
+  const loop = (
+    flows: SequenceFlow[],
+    extra: Parameters<typeof minimalProcess>[0],
+  ): BpmnProcess =>
+    minimalProcess(
+      [start('S'), gateway('W'), user('B'), gateway('G'), user('X'), ...extra],
+      [
+        route('S', 'W'),
+        route('W', 'B', '${c}'),
+        route('W', 'E1', '${!c}'),
+        route('B', 'G'),
+        ...flows,
+      ],
+    );
+
+  it.each<
+    [
+      title: string,
+      ir: BpmnProcess,
+      body: string[],
+      reports: (readonly [keyof typeof REPORT, string])[],
+    ]
+  >([
+    [
+      'a branch reaching a step an earlier sibling branch printed jumps to it instead of printing it again',
+      minimalProcess(
+        [
+          start('S'),
+          typedEvent('startEvent', 'S2', messageDef('M2')),
+          gateway('G0'),
+          gateway('G'),
+          user('P'),
+          user('A'),
+          user('B'),
+          user('Xs'),
+          end('E'),
+          end('E3'),
+        ],
+        [
+          route('S', 'G0'),
+          route('S2', 'Xs'),
+          route('G0', 'P', '${p}'),
+          route('G0', 'G', '${!p}'),
+          route('P', 'Xs'),
+          route('G', 'A', '${a}'),
+          route('G', 'B', '${b}'),
+          route('G', 'E3', '${c}'),
+          route('A', 'Xs'),
+          route('B', 'Xs'),
+          route('Xs', 'E'),
+        ],
+      ),
+      [
+        '  start S',
+        '  if (p) {',
+        '    user P',
+        '    user Xs',
+        '    end E',
+        '  } else if (!p) {',
+        '  } else fail',
+        '  if (a) {',
+        '    user A',
+        '    goto Xs',
+        '  } else if (b) {',
+        '    user B',
+        '    goto Xs',
+        '  } else if (c) {',
+        '  } else fail',
+        '  end E3',
+        '  start S2 message("M2")',
+        '  goto Xs',
+      ],
+      [],
+    ],
+    [
+      'routes reaching the loop head from inside a branch of a body split end the body without a goto',
+      minimalProcess(
+        [
+          start('S'),
+          gateway('W'),
+          gateway('G0'),
+          gateway('G'),
+          user('B'),
+          user('A'),
+          user('C'),
+          end('E'),
+        ],
+        [
+          route('S', 'W'),
+          route('W', 'B', '${c}'),
+          route('W', 'E', '${!c}'),
+          route('B', 'G0'),
+          route('G0', 'G', '${x}'),
+          route('G0', 'A', '${y}'),
+          route('G0', 'C', '${z}'),
+          route('G', 'A', '${a}'),
+          route('G', 'C', '${b}'),
+          route('A', 'W'),
+          route('C', 'W'),
+        ],
+      ),
+      [
+        '  start S',
+        '  while (c) {',
+        '    user B',
+        '    if (x) {',
+        '      if (a) {',
+        '        user A',
+        '      } else if (b) {',
+        '        user C',
+        '      } else fail',
+        '    } else if (y) {',
+        '      goto A',
+        '    } else if (z) {',
+        '      goto C',
+        '    } else fail',
+        '  }',
+        '  end E',
+      ],
+      [['droppedFlowCondition', 'W']],
+    ],
+    [
+      'a loop branch that ends prints its end inline instead of jumping out to it',
+      loop(
+        [
+          route('G', 'X', '${a}'),
+          route('G', 'Y', '${b}'),
+          route('X', 'W'),
+          route('Y', 'E2'),
+        ],
+        [user('Y'), end('E1'), end('E2')],
+      ),
+      [
+        '  start S',
+        '  while (c) {',
+        '    user B',
+        '    if (a) {',
+        '      user X',
+        '    } else if (b) {',
+        '      user Y',
+        '      end E2',
+        '    } else fail',
+        '  }',
+        '  end E1',
+      ],
+      [['droppedFlowCondition', 'W']],
+    ],
+    [
+      // The rebuild puts a minted join between the test and `T`; the end must
+      // print in the branch both with and without it.
+      'a loop test whose bare back edge comes first prints its conditioned end inside the branch, before the goto back',
+      minimalProcess(
+        [start('S'), user('T'), gateway('G'), end('E')],
+        [
+          route('S', 'T'),
+          route('T', 'G'),
+          route('G', 'T'),
+          route('G', 'E', '${c}'),
+        ],
+      ),
+      [
+        '  start S',
+        '  user T',
+        '  if (true) {',
+        '  } else if (c) {',
+        '    end E',
+        '  }',
+        '  goto T',
+      ],
+      [],
+    ],
+    [
+      'a loop test whose conditioned end comes before its bare back edge prints the end inside the branch, before the goto back',
+      minimalProcess(
+        [start('S'), user('T'), gateway('G'), end('E')],
+        [
+          route('S', 'T'),
+          route('T', 'G'),
+          route('G', 'E', '${d}'),
+          route('G', 'T'),
+        ],
+      ),
+      ['  start S', '  user T', '  if (d) {', '    end E', '  }', '  goto T'],
+      [],
+    ],
+  ])('%s', async (_, ir, body, reports) => {
+    const { source, warnings } = printDsl(ir);
+    expect(bodyOf(source)).toBe(['process p {', ...body, '}', ''].join('\n'));
+    expectReports(warnings, ...reports);
+    // The reported fallbacks add no-match routes; every route of the model stays.
+    const rebuilt = await reDesugar(await printed(ir));
+    const reprinted = realReachability(rebuilt);
+    expect(
+      [...realReachability(ir)].filter((pair) => !reprinted.has(pair)),
+    ).toEqual([]);
+    // A reported fallback drops its condition's `var`, so the reprint compares bodies.
+    expect(bodyOf(irToDsl(rebuilt))).toBe(bodyOf(source));
+  });
 });

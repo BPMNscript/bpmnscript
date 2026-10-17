@@ -17,7 +17,7 @@
     <bpmn:intermediateThrowEvent id="NotifyWarehouse">
       <bpmn:incoming>Flow_ConfirmOrder_NotifyWarehouse</bpmn:incoming>
       <bpmn:outgoing>Flow_NotifyWarehouse_Gateway_order-dispatch_3_split</bpmn:outgoing>
-      <bpmn:messageEventDefinition messageRef="Message_WarehouseNotified" />
+      <bpmn:messageEventDefinition messageRef="Message_WarehouseNotified" operaton:class="com.example.orders.NotifyWarehouseDelegate" />
     </bpmn:intermediateThrowEvent>
     <bpmn:exclusiveGateway id="Gateway_order-dispatch_3_split" default="Flow_Gateway_order-dispatch_3_split_default">
       <bpmn:incoming>Flow_NotifyWarehouse_Gateway_order-dispatch_3_split</bpmn:incoming>
@@ -42,7 +42,7 @@
     </bpmn:serviceTask>
     <bpmn:endEvent id="OrderAcknowledged">
       <bpmn:incoming>Flow_Gateway_order-dispatch_3_join_OrderAcknowledged</bpmn:incoming>
-      <bpmn:messageEventDefinition messageRef="Message_OrderAcknowledged" />
+      <bpmn:messageEventDefinition messageRef="Message_OrderAcknowledged" operaton:class="com.example.orders.AcknowledgeOrderDelegate" />
     </bpmn:endEvent>
     <bpmn:sequenceFlow id="Flow_OrderReceived_ConfirmOrder" sourceRef="OrderReceived" targetRef="ConfirmOrder" />
     <bpmn:sequenceFlow id="Flow_ConfirmOrder_NotifyWarehouse" sourceRef="ConfirmOrder" targetRef="NotifyWarehouse" />

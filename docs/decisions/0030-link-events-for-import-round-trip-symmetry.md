@@ -8,16 +8,16 @@ decision-makers: Marlon Kranz
 
 ## Context and Problem Statement
 
-BPMNscript's `await` trigger scope covers message, timer, signal, and conditional, and leaves link out: BPMN's off-page connector for splitting one diagram across pages, a problem a single `.bpmnscript` file never has, since `goto` already names a jump inside one textual source.
-That choice holds for authoring, but it says nothing about import.
-A modeller's existing document can carry a link pair, and the importer refuses `bpmn:linkEventDefinition` by name on both the intermediate throw and the intermediate catch, so such a document does not import at all.
+Authoring gives `await` no reason to take a link trigger beside message, timer, signal, and conditional ([ADR-0026](0026-intermediate-catch-events.md)): a link is BPMN's off-page connector for splitting one diagram across pages, a problem a single `.bpmnscript` file never has, since `goto` already names a jump inside one textual source.
+That argument holds for authoring, but it says nothing about import.
+A modeller's existing document can carry a link pair, and without a construct for it the importer has to refuse `bpmn:linkEventDefinition` on both the intermediate throw and the intermediate catch, so such a document does not import at all.
 Reading a link pair as a `goto` would not fix this under the honest import contract (ADR-0012), which lets the importer warn on a drop that changes nothing the engine runs but never lets it rewrite what is on the wire into a shape the surface prefers: a `goto` compiles to one sequence flow, so the re-exported XML would hold one edge where the incoming document held two events.
 The question this decision settles is whether a construct authoring does not need should exist anyway, for better import coverage of existing models and round-trip symmetry.
 
 ## Decision Drivers
 
 - Import coverage of existing models.
-  Modelers built on bpmn-js, the Camunda Modeler among them, offer both ends of a link pair, and a document drawn with one is refused today.
+  Modelers built on bpmn-js, the Camunda Modeler among them, offer both ends of a link pair, and a document drawn with one should import.
 - Round-trip symmetry under ADR-0012.
   A construct the importer maps has to re-export as the same XML, and a link pair mapped to a `goto` does not.
 - Reuse of what is built.
@@ -29,7 +29,7 @@ The question this decision settles is whether a construct authoring does not nee
 
 ## Considered Options
 
-- Keep refusing a link definition on import, which adds no grammar rule, no vocabulary row, and no second way to jump, but leaves every diagram using BPMN's own off-page connector unimportable, on a refusal the import contract does not ask for, since the engine deploys and runs a link pair.
+- Refuse a link definition on import, which adds no grammar rule, no vocabulary row, and no second way to jump, but leaves every diagram using BPMN's own off-page connector unimportable, on a refusal the import contract does not ask for, since the engine deploys and runs a link pair.
 - Import a link pair as a `goto`, and never author one, which changes the authoring surface not at all and shows the reader a jump in the form this language already has, but re-exports two events and their definitions as one edge, which round-trip symmetry rules out by construction, and leaves the printer deciding which `goto` edges were links from a fact the IR no longer holds.
 - A full surface, `emit link` and a named `await link`, which maps one-to-one in both directions and reuses the payload surface, the required-name check, and the completion snippet message and signal already have, at the price of two constructs for one jump and a name slot on every `await` to make one kind of `await` nameable.
 
@@ -43,7 +43,7 @@ This is the one `emit` whose chain ends; the two printed words `emit link` decid
 
 The link name is quoted text, `link("Retry")`, like a message or signal name.
 It keys the engine's own table and declares nothing, so it is not a declared code in the sense ADR-0023 gives error and escalation.
-`await` gains the optional name slot `emit` has, legal on every trigger rather than on a link catch alone, because a link catch has to be nameable to keep its id across an import and a link-only slot would need a validator rule with no engine reason behind it.
+`await` takes the optional name slot `emit` has, legal on every trigger rather than on a link catch alone, because a link catch has to be nameable to keep its id across an import and a link-only slot would need a validator rule with no engine reason behind it.
 
 In the IR both ends carry `{ kind: 'link'; linkName: string }` and no flow runs between them.
 The precedent is `BoundaryEvent.attachedToRef`, a node with no incoming flow wired to another by a reference rather than by an edge, not `SubProcess.element`, which is a tag on one node with no graph consequence.
@@ -70,7 +70,7 @@ That is why the argument for this surface is notation fidelity and not execution
 
 - Good, because a document carrying a link pair imports instead of being refused, and it re-exports as the same two events under the same name, which the honest import contract (ADR-0012) requires and a `goto` rewrite cannot give.
 - Good, because link costs one dispatch case per layer: a fifth catch kind on the payload surfaces of ADR-0024, one `case 'link'` in each direction of the transform, and one row in the trigger vocabulary.
-- Good, because every `await` is now nameable, so an author can `goto` a specific wait.
+- Good, because every `await` is nameable, so an author can `goto` a specific wait.
 - Bad, because two constructs now spell one jump, and a reader who meets `emit link` has to be told it is a `goto` in the diagram's own notation.
 - Bad, because `emit` is no longer always continuing; `emit link` is the one form that ends its chain, read off the trigger word.
 - Bad, because link names are unique per file where a `goto` target is unique per container, so two subprocesses cannot each have a link called `Retry`.

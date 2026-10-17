@@ -1,7 +1,6 @@
 # @bpmn-script/transform
 
 The conversion layer: the IR type definitions and the four transforms that move a process between formats.
-It's the bulk of the project's hand-written code, where the `language` package is mostly generated.
 
 Everything pivots on the IR, a small set of plain TypeScript objects in `src/ir/types.ts` that describe a process without committing to any one file format ([ADR-0007](../../docs/decisions/0007-intermediate-representation-ast-bpmn.md)).
 Each transform converts between the IR and one neighboring format, so none of them has to know about any of the others.
@@ -39,7 +38,7 @@ interface BpmnProcess {
   documentation?: string; // bpmn:documentation, carried verbatim from a single plaintext child
   isExecutable: true; // always true (executable process)
   versionTag?: string; // operaton:versionTag, an author-supplied version label
-  historyTimeToLive?: string; // operaton:historyTimeToLive, absent means the exporter's default (P30D)
+  historyTimeToLive?: string; // operaton:historyTimeToLive, absent only on import; the exporter then writes P30D
   candidateStarterUsers?: string; // operaton:candidateStarterUsers, comma-separated user ids stored as written
   candidateStarterGroups?: string; // operaton:candidateStarterGroups, comma-separated group ids
   isStartableInTasklist?: boolean; // operaton:isStartableInTasklist, absent means the engine default (true)
@@ -72,19 +71,20 @@ interface SequenceFlow {
   sourceRef: string; // id of source FlowElement
   targetRef: string; // id of target FlowElement
   conditionExpression?: string; // e.g. "${amount > 1000}"
+  conditionDocumentation?: string; // the bpmn:documentation inside the condition
 }
 ```
 
 Every event and activity kind above also carries the flat engine settings Operaton reads off a flow node: `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` (the `operaton:failedJobRetryTimeCycle` element body), plus `executionListeners`.
 Only non-default values are stored, so `asyncBefore` and `asyncAfter` are `true` or absent and `exclusive` is `false` or absent.
 On a node that carries a timer, `exclusive` is written on the `bpmn:timerEventDefinition` as well as on the event tag, since `BpmnParse.parseTimer` locks the timer job from the definition and the tag's copy reaches only the async continuation job; the importer takes the definition's value, falls back to the tag's, and warns once when the two are written apart ([ADR-0021](../../docs/decisions/0021-operaton-engine-attributes-as-named-ir-fields.md)).
-Every gateway kind carries the five settings too, on the statement head that synthesizes it, but none of the listeners.
-`ExclusiveGateway`, `ParallelGateway`, `InclusiveGateway`, and `EventBasedGateway` extend `JobSettings` directly rather than the wider `EngineAttributes`, since a listener needs the textual identity a synthesized gateway has none of ([ADR-0021](../../docs/decisions/0021-operaton-engine-attributes-as-named-ir-fields.md), [ADR-0021](../../docs/decisions/0021-operaton-engine-attributes-as-named-ir-fields.md)).
+Every gateway kind carries the five settings too, written on the statement head that synthesizes it, but no listeners: the four gateway types extend `JobSettings` rather than the wider `EngineAttributes`, since a listener needs a textual identity a synthesized gateway lacks.
 A `StartEvent` and a `UserTask` also carry `formFields`, the `operaton:formData` block: a `FormField` has a type (`string`, `number`, `boolean`, `date`, or `enum`), a label, a default, the `datePattern` a date is parsed with, an enum's `values`, its `constraints` in the order the engine validates them, each a name from the closed `FormConstraintName` union and a `config`, and its `properties`, the `operaton:property` entries ([ADR-0018](../../docs/decisions/0018-forms-and-field-injection.md)).
 
 The seven activity kinds additionally carry `inputParameters` and `outputParameters`, the `operaton:inputOutput` block in declaration order.
 An `IoParameter` is a name and one `IoValue`, tagged `text`, `script`, `list`, or `map`, so a value carrying two forms at once is unrepresentable rather than checked at runtime.
 The same seven carry an optional `loop`, a `LoopCharacteristics` holding the `cardinality`, the `collection` and the `elementVariable` each run binds from it, a `completionCondition`, and `sequential`, which is `true` or absent because the engine runs the instances at once by default.
+The count, the element variable and the completion condition each carry an optional `...Documentation` beside them, as a timer definition does for its `expression` and a conditional one for its `condition`: the `bpmn:documentation` inside that value's own element, with a documented element variable written as a named `bpmn:inputDataItem`.
 `LoopCharacteristics` also extends `JobSettings` minus `jobPriority`: the four settings a repeated statement writes onto the `multiInstanceLoopCharacteristics` element itself, read by the engine onto each run rather than around the whole repetition ([ADR-0022](../../docs/decisions/0022-repetition-the-for-clause-and-its-per-run-job-settings.md)).
 A `UserTask` also carries `taskListeners`, whose events are the six points of a task's human lifecycle; `timeout` is the one that carries a timer.
 An `ExecutionListener` and a `TaskListener` carry exactly one binding, tagged `class`, `expression`, `delegateExpression`, or `script`, the first three being three of the forms a service task binds by and the fourth an inline script, which no service task takes.
@@ -98,12 +98,13 @@ A `type` this surface cannot carry therefore refuses the document rather than fa
 
 `SubProcess` is itself a `FlowContainer`, so the IR is recursive: a sub-process nests its own `flowElements` and `sequenceFlows` at any depth, and no sequence flow crosses a container boundary.
 `element` picks which of the two tags it serializes to, absent for `bpmn:subProcess` and `'transaction'` for `bpmn:transaction`, which the DSL writes with the `attempt` head.
-Operaton runs the second tag through the very behavior class it gives the first, so the tag changes nothing about how the block executes; what it buys is that the engine then accepts a cancel end inside the block and a cancel boundary on it, and refuses to deploy either anywhere else.
+Operaton runs both tags through the same behavior class, so the tag changes nothing about how the block executes.
+What it changes is that the engine accepts a cancel end inside the block and a cancel boundary on it, and refuses to deploy either anywhere else.
 
 Event semantics ride on an `eventDefinition` field, optional on a start or end event and required on an intermediate throw, an intermediate catch, and a boundary event.
-`terminate` and `cancel` join the union on an end event alone and are both payload-free: one stops every running path of its scope at once and the other gives up the block the end sits in.
+`terminate` and `cancel` join the union on an end event, `cancel` also on a boundary event, and both are payload-free: one stops every running path of its scope at once and the other gives up the block the end sits in.
 Neither raises anything for a handler to catch by name, which is why the surface spells both on `end` instead of `throw`.
-Compensation is the odd one out, because BPMN expresses it through `isForCompensation` and an association rather than a boundary event: every holder may carry it except `BoundaryEvent`.
+A compensation definition may sit on a start, an end, or an intermediate throw, but not on an intermediate catch or a `BoundaryEvent`, since BPMN's compensation boundary works through `isForCompensation` and an association, which the IR does not model.
 `IntermediateCatchEvent` is restricted to message, signal, timer, condition, or link: the first four are the triggers a linear flow can block on and then continue past ([ADR-0026](../../docs/decisions/0026-intermediate-catch-events.md)), and link is the catching end of a pair added for the import direction ([ADR-0030](../../docs/decisions/0030-link-events-for-import-round-trip-symmetry.md)).
 The document-level `bpmn:Error`, `bpmn:Escalation`, `bpmn:Message`, and `bpmn:Signal` roots are synthesized rather than modeled ([ADR-0023](../../docs/decisions/0023-event-roots-from-usage-and-declared-codes.md), [ADR-0024](../../docs/decisions/0024-event-trigger-payloads-paren-slot.md)).
 A message or signal root comes from the names in use, an error or escalation root from the codes in use together with `errorDecls` and `escalationDecls`, which is where a declared root's `name` and message text live.
@@ -122,16 +123,17 @@ A token appears at a `BoundaryEvent` while its host activity (named by `attached
 import { astToIr, irToXml, xmlToIr, irToDsl } from '@bpmn-script/transform';
 
 const ir: BpmnProcess = astToIr(langiumAstModel); // sync
-const xml: string = await irToXml(ir); // async; adds bpmndi: layout data
+const xml: string = await irToXml(ir, { exporterVersion: '0.1.0' }); // async; adds bpmndi: layout data
 const { ir: imported, warnings } = await xmlToIr(xmlString); // async; discards DI, may throw
 const { source, warnings: printWarnings } = irToDsl(ir); // sync; warns for what it cannot carry into the script
 ```
 
-`src/index.ts` is the public surface, summarized here: the IR types, `isGateway` and `gatewayDefaultFlowId` for reading them at runtime, the deterministic id helpers, the JUEL parser (`parseJuel`, `renderRawFallback`), the `Unsupported*Error` classes, `LayoutError`, and the `ImportWarning` and `PrintWarning` types.
+`exporterVersion` is written on `bpmn:definitions` and defaults to `0.0.0`.
+`src/index.ts` also exports the IR types, `isGateway` and `gatewayDefaultFlowId` for reading them at runtime, the deterministic id helpers, the JUEL parser (`parseJuel`, `renderRawFallback`), the `Unsupported*Error` classes, `LayoutError`, the `ImportWarning` and `PrintWarning` types, and the input checks the CLI and the extension share (`xmlInputProblem`, `readableParseError`).
 
 ## The import contract
 
-`xmlToIr` never discards an element without saying so.
+Apart from the diagram interchange data ([ADR-0009](../../docs/decisions/0009-auto-layout-and-expansion-hint.md)), `xmlToIr` never drops an element without saying so.
 What it cannot represent falls into two buckets, split where the engine's own parse splits them ([ADR-0012](../../docs/decisions/0012-honest-bpmn-import.md)).
 
 Content the IR cannot express at all is refused: `xmlToIr` throws a subclass of `UnsupportedConstructError` before producing any IR, so there is no partial output.
@@ -140,14 +142,15 @@ A document whose root is not `bpmn:definitions` or a sequence flow whose `source
 Content the IR does not carry (an extra Operaton extension attribute, a lane, a text annotation) comes back through the `warnings` array instead.
 Every drop of a setting the engine reads names the method that reads it and says the document written back runs without it, so a reader can tell a cosmetic drop from one that changes what runs.
 
-The diagram interchange data aside ([ADR-0009](../../docs/decisions/0009-auto-layout-and-expansion-hint.md)), no element is dropped in silence.
 Every BPMN element and every extension element `xmlToIr` cannot carry is reported, named by the tag the document spells and by its own id, and attributed to the element it sat on.
 A construct is reported whole, so a dropped `bpmn:ioSpecification` names itself rather than each data input inside it.
 The lane structure goes the same way, reported lane by lane, with anything hung on a lane or a lane set leaving with it.
 
 The `camunda` namespace is read as the `operaton` namespace, attributes and elements alike, since `BpmnParse.OPERATON_BPMN_EXTENSIONS_NS` falls back to the camunda URI wherever the operaton spelling is absent.
 The namespace URI is swapped in the document's `xmlns` declarations before it is parsed (the same URI inside a documentation body is text and stays), one warning per document says so, and the document written back carries `operaton:` alone.
-A file declaring both prefixes reads both as one namespace, and the one setting written under both prefixes on one element keeps the later one.
+A file declaring both prefixes keeps what the engine runs: `Element.attributeNS`, `elementNS`, and `elementsNS` look under the camunda URI only when the operaton one finds nothing, per attribute name on one element and per child tag name under one parent.
+A `camunda:` attribute beside its `operaton:` twin, and every `camunda:` child sharing a tag name with an `operaton:` sibling, is left out with one `extensionAttribute` warning per element, so an `operaton:executionListener` beside a `camunda:executionListener` imports alone.
+Children the engine fetches by tag alone import under both spellings: list items, map entries, and an external task's `errorEventDefinition`.
 A connector is refused under either prefix wherever it sits: beside a service, send, or business rule task's implementation, and on a thrown message.
 
 What is dropped without a warning is an attribute `xmlToIr` does not read, and it comes in two shapes.
@@ -156,8 +159,6 @@ The same attribute on an Operaton extension element the IR reads is reported, a 
 The other is a BPMN attribute this surface neither reads nor reports: a process's `processType` or `isClosed`.
 Each of those is content left out.
 A lone `operaton:resource` on a sequence flow's condition expression or a conditional event definition's condition is the one exception that is reported rather than dropped: Operaton reads it only alongside a `language`, so on its own it reaches nothing, and the condition still imports as the expression its body writes.
-`isExecutable="false"`, whose import changes what the document says, is reported instead of left for the reader to notice, and so is an absent `isExecutable`, which `BpmnParse.parseProcessDefinitions` defaults to `!deployment.isNew()` and therefore reads as false in every deployment of a new resource, skipping the process.
-An absent `operaton:historyTimeToLive` is reported for the same reason: `HistoryTimeToLiveParser.parseAndValidate` refuses it under the engine's default `enforceHistoryTimeToLive`, and the export writes `P30D` in its place, so the rebuilt process deploys where the source did not.
 
 ### Refusals
 
@@ -172,7 +173,7 @@ It is a `bpmn:import`, which `BpmnParse.parseImports` fails on for every type bu
 It is a process without an id, and a start event, a timer event, an event-based gateway, or a message or signal boundary event without one, which Operaton fails the deployment on.
 It is also an error, escalation, cancel or conditional boundary event without an id, which Operaton deploys and then fails the run on, and the message names the method that fails it; an id minted for it would make the rebuilt document run where the source does not.
 Any other flow element without an id imports under a minted one, and a compensation boundary event among them is then refused like every compensation boundary event ([ADR-0010](../../docs/decisions/0010-deterministic-synthesized-ids.md)).
-A refusal names such an element by its tag and container, as in `(a bpmn:userTask without an id in 'p')`, since the minted id appears nowhere in the file.
+A refusal names such an element by its tag and container, as in `(a 'bpmn:userTask' without an id in 'p')`, since the minted id appears nowhere in the file.
 And it is no `bpmn:process` at all, or several processes of which none is marked `isExecutable="true"`, which `parseProcessDefinitions` deploys none of.
 The first three of those are refused by `refuseDocumentShapes` on the raw document text, before it is parsed, on a copy with the comments and CDATA sections cut out, so a `<!DOCTYPE` or an `&name;` inside a script body does not refuse the file.
 
@@ -193,6 +194,8 @@ That is a constraint with no name, or a name outside the seven the surface takes
 It is also a `validator` or a bound with no `config`, and a name repeated on one field, which `DefaultFormHandler.parseValidation` deploys and this script holds once per field.
 
 `UnsupportedFormReferenceError` covers a user task naming both a form key and a form reference, and a form reference with no binding, one outside `latest`, `deployment`, and `version`, or a `version` binding naming no version.
+
+`UnsupportedVariableNameError` covers a call activity's `operaton:in` or `operaton:out` whose `source` or `target` names a variable the script cannot write as a plain name (letters, digits, `_`, an inner `-`, no keyword), since a variable has no backtick form.
 
 `UnsupportedCallActivityError` covers a call activity naming neither a `calledElement` nor an `operaton:caseRef`, or both, which `BpmnParse.parseCallActivity` refuses to deploy.
 It covers one naming a `caseRef` alone, which the engine runs through `CaseCallActivityBehavior` and this surface has no form for.
@@ -295,30 +298,28 @@ A timer under a task listener that is not a `timeout` is dropped with a warning,
 An input/output parameter carrying body text beside one nested value keeps the nested value and reports the text, as `BpmnParseUtil.parseNestedParamValueProvider` reads it.
 An engine setting or a listener on a link throw is reported here as well, one warning per item: Operaton creates no activity for a link throw and so never reads them, and the re-exported document runs the same without them.
 Attribution is exact wherever moddle ties the content to its owning element; the few undeclared `operaton:` elements it cannot pin down are reported once against the process id instead, coarser but still reported.
-On a call activity, `calledElementTenantId` is execution-affecting rather than cosmetic, so it is refused instead of warned about: it pins which tenant the engine resolves the called process against, so dropping it changes which process runs.
-Neither variable-mapping attribute falls on that side of the boundary, since Operaton runs a mapping delegate after the declared `in` and `out` mappings rather than in place of them, so both import into the IR's `mapper` field instead ([ADR-0019](../../docs/decisions/0019-a-call-activitys-variable-mapping.md)).
+A call activity's `variableMappingClass` and `variableMappingDelegateExpression` import into the IR's `mapper` field, since Operaton runs a mapping delegate after the declared `in` and `out` mappings rather than in place of them ([ADR-0019](../../docs/decisions/0019-a-call-activitys-variable-mapping.md)).
 
 `lane` covers a `bpmn:Lane`, one warning per lane, a lane nested in a `bpmn:childLaneSet` included.
 The flat IR has no lane concept, so every step lands in one process and the assignment goes.
 
-`label` covers a distinct `name` on an event handler, a typed end event, an intermediate throw, an intermediate catch, or a boundary event.
-Those read from their trigger and code, so a differing label has nowhere to render.
+`label` covers a `name` on an event handler, a typed end event, an intermediate throw, an intermediate catch, or a boundary event.
+Those read from their trigger and code, so a label has nowhere to render.
 A link event's `name` is written from its link name on export, so a `name` equal to the link name is derived and a differing one alone is reported.
 A sequence flow's `name` is reported here when it differs from the label the rebuilt document derives, which is the condition's body inside its `${...}` on a conditioned flow and nothing on a plain one; `name=""`, which the Modeler writes on every unconditioned flow, is not a label.
-It also covers a label on a start or an end whose id is the one the compiler mints for its container (`StartEvent_<container>`, `EndEvent_<container>`, or `EndEvent_<boundary>` for a boundary escape), since a script cannot spell that id back: the statement that would have carried the label is left out whole for a start, and for an end only at its block's tail; elsewhere the end prints under its reserved id and the print reports it.
+It also covers a label on a start whose id is the one the compiler mints for its container (`StartEvent_<container>`), since a script cannot spell that id back and the statement that would have carried the label is left out whole; a label on an end under such an id (`EndEvent_<container>`, or `EndEvent_<boundary>` for a boundary escape) makes the end print under its reserved id, and the print reports it.
 Any other id prints, respelled if the script cannot spell it, with the print reporting the rename ([ADR-0010](../../docs/decisions/0010-deterministic-synthesized-ids.md)).
 
 `unreferencedRoot` covers a `bpmn:Message` or `bpmn:Signal` root that nothing in the process references, a receive task's `messageRef` included.
 It also covers an error or escalation root carrying no code, which nothing can key it by, unless it is an error root carrying an `operaton:errorMessage`, which refuses; one carrying a code imports as a declaration whether or not anything raises it.
 
 `documentation` covers `bpmn:documentation` at every position where `label` above is warned, for the same reason: an event handler, a typed end event, an intermediate throw, an intermediate catch, a boundary event, and a start or an end whose id is the one the compiler mints for its container.
-It also covers a `bpmn:documentation` on a position that reads no `name` at all: the definitions root, an event definition, an external task's `operaton:errorEventDefinition`, an Error/Escalation/Message/Signal root, a multi-instance loop characteristics element, and a sequence flow.
+It also covers a `bpmn:documentation` on a position that reads no `name` at all: the definitions root, an event definition, an external task's `operaton:errorEventDefinition`, an Error/Escalation/Message/Signal root, a multi-instance loop characteristics element, a `bpmn:inputDataItem` without a name, and a sequence flow.
 A second `bpmn:documentation` child on one element, or one whose `textFormat` is set to anything but plaintext, falls under the category regardless of position.
 Everywhere else the text is carried onto the IR node alongside its `name` ([ADR-0012](../../docs/decisions/0012-honest-bpmn-import.md)).
 
 `unmappedConstruct` covers BPMN content no reader on this transform reads, one warning per construct.
 Beside the process: a `bpmn:collaboration`'s participants and message flows, which `BpmnParse.parseCollaboration` records for the diagram alone, one warning per pool naming the process it wraps and one per message flow naming its ends; a process not marked `isExecutable="true"` beside the one that is, which `parseProcessDefinitions` does not deploy either; and a root element other than the error, escalation, message, and signal roots the events resolve against, such as a `bpmn:category`, a `bpmn:dataStore`, a `bpmn:itemDefinition`, or a `bpmn:interface`.
-A process holding no flow element at all imports with a warning that the printed script draws an error, since a process needs a step.
 On an element it touches: an artifact on a process or sub-process (a `bpmn:textAnnotation`, its `bpmn:association`, a `bpmn:group`), a `bpmn:ioSpecification`, a `bpmn:property`, a data association, a `bpmn:auditing` or `bpmn:monitoring` block, and a resource role the engine reads nothing of.
 On a user task a `bpmn:humanPerformer` and a `bpmn:potentialOwner` are read instead, the way `BpmnParse.parseTaskDefinition` reads them: the performer's formal expression is the assignee, each owner's is split as `parseCommaSeparatedList` splits it into `user(x)` candidate users and `group(x)` or bare candidate groups, and the role-derived entries come before the `operaton:` attribute's own, in the engine's order.
 That split runs on the commas outside an expression alone, so a list written as one `${...}` or `#{...}` body stays a single entry.
@@ -331,7 +332,6 @@ An `operaton:jobPriority` there joins them, since Operaton reads a job priority 
 A `bpmn:standardLoopCharacteristics`, with its `bpmn:loopCondition` child, drops whole rather than importing as a repetition: Operaton's own parser looks only for a multi-instance child there, so the activity deploys through its ordinary path and runs once regardless of what the source declared.
 As a flow element in its own right: a `bpmn:dataObject` (with anything nested under it, such as a `bpmn:dataState`), a `bpmn:dataObjectReference`, or a `bpmn:dataStoreReference`, at process level and inside a sub-process alike; none of the three is something a `bpmn:sequenceFlow` can point at, so dropping it leaves no hole in the graph, and Operaton keeps process variables in its own store regardless.
 On a `bpmn:transaction`: the `method` and `protocol` attributes, which Operaton never reads, and `triggeredByEvent="true"`, which it ignores on that tag and runs the block as an ordinary step of the surrounding flow.
-A `bpmn:transaction` with no start event imports with one added, reported as `behaviourChanged`, since Operaton deploys it and `SubProcessActivityBehavior.execute` fails on entering it; a `bpmn:process` or a `bpmn:subProcess` with none, an empty process included, is refused, since `parseStartEvents` fails the deployment there.
 On a wait with several branches: an `instantiate="true"`, and an `eventGatewayType` other than `Exclusive`, neither of which Operaton's own parser ever reads.
 On any step: a `default` naming one of the step's own outgoing flows is carried, since `BpmnActivityBehavior.handleNoTransitions` takes it when no other route holds, and the printed script writes it as the fallback of the block the step's routes print as; a `default` naming any other flow is dropped with a warning, since `handleNoTransitions` finds no flow to take and fails the step.
 An `operaton:errorEventDefinition` on an external task written with no `errorRef` is skipped with a warning, as `parseOperatonErrorEventDefinitions` skips it.
@@ -353,8 +353,8 @@ A repeated enum value id on a form field is kept the way `FormTypes.parseFormPro
 
 `behaviourChanged` covers content imported in a changed form that the engine deploys or runs differently from the source, where the warning names the difference.
 `isExecutable="false"` on the process: the IR holds an executable process and nothing else, so the import and the file written back from it are both executable and an engine will run what the source document held back.
-An absent `isExecutable` on a lone process is reported the same way, since `parseProcessDefinitions` skips it in a new deployment.
-An absent `operaton:historyTimeToLive` is written back as `P30D`, so the rebuilt process deploys where the source, under the engine's default `enforceHistoryTimeToLive`, did not.
+An absent `isExecutable` on a lone process is reported the same way, since `BpmnParse.parseProcessDefinitions` defaults it to `!deployment.isNew()` and so skips the process in every deployment of a new resource.
+An absent `operaton:historyTimeToLive` is written back as `P30D`, so the rebuilt process deploys where the source, which `HistoryTimeToLiveParser.parseAndValidate` refuses under the engine's default `enforceHistoryTimeToLive`, did not.
 A `bpmn:transaction` with no start event imports with one added, so the block runs where `SubProcessActivityBehavior.execute` fails the source on entering it.
 A `bpmn:conditionExpression` or `bpmn:completionCondition` body with no `${` or `#{` opener at all is written inside `${...}`, which evaluates it, where `UelExpressionCondition.evaluate` (or `MultiInstanceActivityBehavior.completionConditionSatisfied`) reads the bare text as a string and fails on every run.
 An empty condition body, which fails the same way, is dropped instead: the flow imports with no condition and the rebuild routes along it.
@@ -375,7 +375,7 @@ Refusing either would reject a file the engine deploys although the rebuilt docu
 
 `irToDsl` returns `{ source, warnings }`, and each `PrintWarning` names one thing the script could not carry from the IR, or one it wrote that draws an error when the source is read back.
 `warnings` is `[]` for an IR that prints cleanly.
-Every message keeps the id out of its text and in `elementId`, since a synthesized id routinely spells BPMN vocabulary the script keeps away from its readers.
+Every message names the element it is about, and `elementId` carries its id.
 
 ```ts
 interface PrintWarning {
@@ -388,8 +388,12 @@ interface PrintWarning {
     | 'degradedSplit'
     | 'droppedCondition'
     | 'refusedStatement'
-    | 'renamedId'
-    | 'droppedSetting';
+    | 'droppedSetting'
+    | 'skippedJoin'
+    | 'addedJoin'
+    | 'changedJoin'
+    | 'nestedFork'
+    | 'unreachable';
   message: string; // names what was left out or changed and whether the process runs the same
 }
 ```
@@ -400,8 +404,7 @@ Every other elided label and documentation is reported by `xmlToIr`, so a caller
 `droppedEdge` covers a route the emitter can neither name nor place: a jump into a gateway that still has a choice of its own, into a gateway the walk has already crossed, or into a step the print leaves out.
 The edge is left out, and the `// unstructured region: hand-repair required` marker written where it belonged names the step it led to.
 
-`defaultFlow` covers a split whose fallback the script cannot write as the model has it.
-That is a split naming no fallback whose every route carries a condition, where the engine fails the run when none holds and the script carries on past the routes instead.
+`defaultFlow` covers a fallback the script cannot write as the model has it.
 It is a fallback carrying a condition, which a fork or a step skips while weighing, so the run is the same without it, and which the engine refuses to deploy on a choice, so the script without it runs where the model as drawn does not.
 And it is a fallback on an inclusive split beside an unconditioned branch, which nothing is ever left over for; the script writes it as an `else` all the same, which draws an error when the source is read back.
 
@@ -414,11 +417,22 @@ On a route beside an unconditioned fallback the model diverts the run rather tha
 `refusedStatement` covers a step written under a name the script keeps for the ids it mints itself, a plain synthesized end printed anywhere but at the tail of the block the compiler mints it for, and a jump into a branch of an `await` or `parallel` block from outside that branch.
 Each prints as the model has it and draws an error when the source is read back.
 
-`renamedId` covers an id the script writes as a process header, a statement name, or a `goto` target and cannot spell, which prints under a minted name that no id in the document and no earlier minted name collides with.
-The document built from the script carries the minted id, and the engine keys history, migration plans, and a start-before-activity on the activity id, so what runs is not the same ([ADR-0010](../../docs/decisions/0010-deterministic-synthesized-ids.md)).
-
 `droppedSetting` covers job settings on a gateway that no statement head took over by the end of the walk, an elided pass-through or a gateway a jump was forwarded through among them.
 The process runs without them.
+
+`skippedJoin` covers a jump printed past a join: a route that takes it goes on at once instead of waiting for the others, so the steps after the join run once per such route.
+
+`addedJoin` covers the routes out of a split that stop without an end event.
+The script has no form for such a route, so the branches of the printed `parallel` block meet at a join after it, and the rebuilt process holds each route there until the others arrive where the engine ended each one where it stopped.
+
+`changedJoin` covers an inclusive join printed as the join of a `parallel` block none of whose branches carries a condition, which reads back as a parallel join.
+A parallel join waits for a route from every branch, so a route led away from its branch before the join, by an interrupting boundary event for one, leaves the rebuilt process waiting there forever.
+
+`nestedFork` covers a parallel fork some of whose routes meet at a join of their own before the fork's join.
+The script prints them as nested `parallel` blocks, adding a fork ahead of those routes, and the process runs the same.
+
+`unreachable` covers a step that no start event, boundary event or event handler leads to.
+The engine never runs it, so the script leaves it out.
 
 ## Build and test
 
@@ -445,12 +459,15 @@ npm test
 | `src/ir-to-dsl.ts`         | `irToDsl`: restructure flat IR into `{ source, warnings }`, degrading to `goto` ([ADR-0014](../../docs/decisions/0014-restructure-the-ir-into-a-dsl-with-dominator-analysis.md)) |
 | `src/juel.ts`              | `parseJuel`, `renderRawFallback`: the JUEL-subset parser and serializer for the import path                                                                                      |
 | `src/errors.ts`            | `UnsupportedConstructError` and its refusal subclasses                                                                                                                           |
+| `src/humanize.ts`          | `humanize`: the label the export derives from a task or sub-process id                                                                                                           |
+| `src/host-messages.ts`     | Messages for files that cannot be converted, shared by the CLI and the extension                                                                                                 |
+| `src/bpmn-moddle.d.ts`     | Type declarations for `bpmn-moddle`, `bpmn-auto-layout` and `saxen`, which ship none                                                                                             |
 | `src/index.ts`             | Package barrel export                                                                                                                                                            |
 | `src/operaton-moddle.json` | Trimmed Operaton moddle extension descriptor ([ADR-0008](../../docs/decisions/0008-fork-camunda-moddle-extension.md))                                                            |
 
 ## Implementation notes
 
-`irToXml` uses `bpmn-moddle@^10` and `bpmn-auto-layout@^1.2.0`.
+`irToXml` uses `bpmn-moddle@^10` and `bpmn-auto-layout@^1.3.0`.
 The layout library injects the `<bpmndi:BPMNDiagram>` data, so the IR needs no coordinate fields.
 When `bpmn-auto-layout` throws on a validator-clean shape (a `goto` restructuring among them), `irToXml` raises `LayoutError` rather than an `Unsupported*Error`, and its `xml` field carries the document with no `bpmndi:` element, for any process.
 Operaton deploys it the same, since `BpmnParse.parseDiagramInterchangeElements` reads a diagram only when one is present.
@@ -462,7 +479,7 @@ The Operaton namespace comes from `src/operaton-moddle.json`, a trimmed fork of 
 
 Every synthesized gateway, flow, and boundary-event id comes from `synthesize-ids.ts`.
 Gateway and flow ids are positional, derived from the element's structural coordinate.
-An unnamed throw or catch is minted a positional id the same way (`Throw_<coord>_<n>`, `Catch_<coord>_<n>`); compiling the same unnamed statement again after the printer reordered it (a multi-start chain, a hoisted branch) renumbers the id, which is cosmetic and does not change what the process runs.
+An unnamed throw or catch is minted a positional id the same way (`Throw_<coord>`, `Catch_<coord>`); compiling the same unnamed statement again after the printer reordered it (a multi-start chain, a hoisted branch) renumbers the id, which is cosmetic and does not change what the process runs.
 A boundary event's id is host-derived instead (`Boundary_<hostId>_<trigger>`), so it survives a round trip unmoved no matter where the decompiler places the handler.
 The templates are frozen: changing one means updating the round-trip normalizer and regenerating `tests/golden/invoice-approval-generated.bpmn` ([ADR-0010](../../docs/decisions/0010-deterministic-synthesized-ids.md), [ADR-0027](../../docs/decisions/0027-boundary-events-attached-to-an-activity.md)).
 

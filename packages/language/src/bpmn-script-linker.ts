@@ -27,6 +27,7 @@ import {
   type NamedStatement,
 } from './bpmn-script-scope-provider.js';
 import { codeTriggerOf, payloadTextOf } from './paren-items.js';
+import { diagnosticText, printName } from './vocabulary.js';
 
 /** First match wins: duplicate names are a validator error. */
 function findNamedStatement(
@@ -106,28 +107,30 @@ export class BpmnScriptLinker extends DefaultLinker {
     targetDescription?: AstNodeDescription,
   ): LinkingError {
     const source = refInfo.container;
+    const name = refInfo.reference.$refText;
     const codeTrigger = codeTriggerOf(source);
     if (codeTrigger !== undefined) {
-      const name = refInfo.reference.$refText;
       // Advising a second declaration under the other kind would lead to the duplicate-name error.
       const declaredKind = declaredCodeKind(source, name);
       const message =
         declaredKind === undefined
-          ? `'${name}' is not declared. Add '${codeTrigger} ${name}' to the process.`
-          : `'${name}' is declared as an ${declaredKind}, not an ${codeTrigger}.`;
+          ? diagnosticText(
+              `'${name}' is not declared`,
+              `help: add '${codeTrigger} ${printName(name)}' to the process`,
+            )
+          : `'${name}' is declared as an ${declaredKind}, not an ${codeTrigger}`;
       return { info: refInfo, message };
     }
     const isHost = isOnHandler(source) && refInfo.property === 'host';
     const isGotoTarget =
       isGotoStatement(source) && refInfo.property === 'target';
     if (isHost || isGotoTarget) {
-      const name = refInfo.reference.$refText;
       const process = AstUtils.getContainerOfType(source, isProcess);
       const target = process ? findNamedStatement(process, name) : undefined;
       if (process && !target) {
         const message = isHost
-          ? `No step named '${name}' in this process to attach to.`
-          : `No step named '${name}' in this process.`;
+          ? `no step named '${name}' in this process to attach to`
+          : `no step named '${name}' in this process`;
         return { info: refInfo, message };
       }
       const sourceContainer = enclosingFlowContainer(source);
@@ -138,16 +141,23 @@ export class BpmnScriptLinker extends DefaultLinker {
       if (located) {
         const { phrase, crossesHandler } = located;
         const boundary = isHost
-          ? `a boundary event attaches to an activity in its own scope.`
+          ? ['note: a boundary event attaches to an activity in its own scope']
           : crossesHandler
-            ? `a goto cannot cross an event handler boundary: an event handler's steps run only when its event fires.`
-            : `a goto cannot cross a subprocess boundary.`;
+            ? [
+                'note: a goto cannot cross an event handler boundary',
+                "note: an event handler's steps run only when its event fires",
+              ]
+            : ['note: a goto cannot cross a subprocess boundary'];
         return {
           info: refInfo,
-          message: `'${refInfo.reference.$refText}' is ${phrase}; ${boundary}`,
+          message: diagnosticText(`'${name}' is ${phrase}`, ...boundary),
         };
       }
     }
-    return super.createLinkingError(refInfo, targetDescription);
+    // Langium's own wording names the grammar type the reference expects.
+    return {
+      ...super.createLinkingError(refInfo, targetDescription),
+      message: `nothing named '${name}' is in reach here`,
+    };
   }
 }

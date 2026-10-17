@@ -28,6 +28,11 @@ const ROWS: Row[] = [
     "a user task 'Review': Review the invoice",
   ],
   [
+    'a name in backticks shows the bare id its goto resolves to',
+    'process p {\n  user `Task.1`\n  goto <|>`Task.1`\n}',
+    "a user task 'Task.1'",
+  ],
+  [
     'a subprocess names itself a subprocess',
     'process p {\n  subprocess <|>Pack(label: "Pack the goods") { }\n}',
     "a subprocess 'Pack': Pack the goods",

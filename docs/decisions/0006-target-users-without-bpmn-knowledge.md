@@ -36,16 +36,15 @@ Decided in the supervision meeting of 2026-06-30.
 ## Decision Outcome
 
 Chosen option: "Assume general programming literacy but no BPMN knowledge, and minimize required syntax".
-Concretely, two rules bind future grammar decisions:
+Two rules bind every grammar decision.
 
-1. No BPMN prerequisite.
-   Reading or writing a `.bpmnscript` file must not require knowing BPMN.
-   Keywords name what the user means (a step a person performs, a step the system performs, a decision), not the BPMN element behind it.
-2. Defaults over declarations.
-   Whenever the compiler can infer or synthesize a detail, the grammar must not require the user to write it.
-   When two designs express the same process, the one with less required text wins.
+The first is that reading or writing a `.bpmnscript` file must not require knowing BPMN.
+Keywords name what the user means (a step a person performs, a step the system performs, a decision), not the BPMN element behind it.
 
-Implicit sequence flow (ADR-0011) and synthesized structural ids (ADR-0010) already follow both rules; this decision makes them binding for what comes next.
+The second is defaults over declarations.
+Whenever the compiler can infer or synthesize a detail, the grammar must not require the user to write it.
+When two designs express the same process, the one with less required text wins.
+Implicit sequence flow (ADR-0011) and synthesized structural ids (ADR-0010) follow both rules.
 
 The second rule stops at the compiler's output boundary, which is BPMN XML.
 `bpmns build` compiles a `.bpmnscript` file to a `.bpmn` file, `bpmns parse` decompiles it back, and delegate classes are hand-written in a separate host application, as in `examples/spring-boot/`.
@@ -60,7 +59,7 @@ The generated scaffold is a long-lived support surface of its own, in dependency
 - Good, because grammar discussions get a tiebreaker instead of re-arguing the audience each time.
 - Good, because no lossy construct enters the language and the IR stays free of host-language code, so the round-trip guarantees hold for everything the surface admits.
 - Good, because a deploy command stays a thin REST client, the mechanics the end-to-end test adapters (`tests/fixtures/adapters/`) already exercise.
-- Bad, because hiding BPMN vocabulary makes the DSL-to-XML correspondence less obvious for BPMN-literate readers; documentation has to carry that mapping, and the README glossary is a start.
+- Bad, because hiding BPMN vocabulary makes the DSL-to-XML correspondence less obvious for BPMN-literate readers; documentation has to carry that mapping, starting with the [glossary](../glossary.md).
 - Bad, because every default the grammar adopts is a rule the round trip must invert, synthesized on compile and elided on decompile, growing the mapping surface that ADR-0010 normalization already covers for ids.
 - Bad, because delegates are written and kept in sync by hand; the `class: "..."` string is not checked against any Java source, so a mismatch surfaces only at engine runtime.
 - Bad, because the one-file authoring experience is not available: a process and the code its steps call live in separate files.

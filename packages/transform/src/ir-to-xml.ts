@@ -24,7 +24,7 @@ import { layoutProcess } from 'bpmn-auto-layout';
 
 import { humanize } from './humanize.js';
 import { LayoutError } from './errors.js';
-import { resolveCollision } from './synthesize-ids.js';
+import { claimId, resolveCollision } from './synthesize-ids.js';
 import type {
   BpmnProcess,
   CallActivity,
@@ -65,13 +65,15 @@ import {
  */
 const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 
-/** Written when a process authors none; the importer drops exactly this value. */
+/** Written when a process authors none; the printer omits exactly this value. */
 export const HISTORY_TIME_TO_LIVE = 'P30D';
 
 /** Read, not imported `with { type: 'json' }`, which needs `resolveJsonModule`. */
-const operatonModdleExtension: unknown = JSON.parse(
+const operatonModdleExtension = JSON.parse(
   readFileSync(resolveOperatonModdlePath(), 'utf-8'),
-);
+) as { uri: string };
+
+export const OPERATON_NS = operatonModdleExtension.uri;
 
 function resolveOperatonModdlePath(): string {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -97,7 +99,7 @@ function resolveOperatonModdlePath(): string {
  */
 export function createModdle(): BpmnModdleInstance {
   return new BpmnModdle({
-    operaton: operatonModdleExtension as Record<string, unknown>,
+    operaton: operatonModdleExtension,
   });
 }
 
@@ -171,7 +173,7 @@ export async function irToXml(
   }
 
   try {
-    return escapeAttributeWhitespace(await layoutProcess(xml));
+    return writtenXml(await layoutProcess(xml));
   } catch (cause) {
     // The expansion hint has no `dc:Bounds`, and `BpmnParse.parseDIBounds` fails
     // deployment on a bounds-less shape, so the fallback drops the diagram.
@@ -179,8 +181,34 @@ export async function irToXml(
     const { xml: xmlWithoutDiagram } = await moddle.toXML(definitions, {
       format: true,
     });
-    throw new LayoutError(escapeAttributeWhitespace(xmlWithoutDiagram), cause);
+    throw new LayoutError(writtenXml(xmlWithoutDiagram), cause);
   }
+}
+
+function writtenXml(xml: string): string {
+  return tightenDocumentedExpressions(escapeAttributeWhitespace(xml));
+}
+
+/**
+ * The formatter indents a documentation child, and the indentation lands in
+ * the expression's text. `BpmnParse` reads a loop count and a completion
+ * condition untrimmed, so that whitespace turns either into text the engine
+ * fails on; the child and the body are written flush instead.
+ */
+function tightenDocumentedExpressions(xml: string): string {
+  const tags = [
+    'conditionExpression',
+    'condition',
+    'loopCardinality',
+    'completionCondition',
+    ...Object.values(TIMER_KIND_TO_CHILD),
+  ].join('|');
+  const documented = new RegExp(
+    `(<bpmn:(${tags})\\b[^>]*>)\\s*([^<]*?)\\s*(<bpmn:documentation>[^<]*</bpmn:documentation>)\\s*([^<]*?)\\s*(</bpmn:\\2>)`,
+    'g',
+  );
+  // The body sits on either side of the child, depending on the writer path.
+  return xml.replace(documented, '$1$4$3$5$6');
 }
 
 /**
@@ -288,12 +316,7 @@ function synthesizeNamedRoots(
 }
 
 function claimRootId(prefix: string, code: string, taken: Set<string>): string {
-  const id = resolveCollision(
-    prefix + code.replace(/[^A-Za-z0-9_.-]/g, '_'),
-    taken,
-  );
-  taken.add(id);
-  return id;
+  return claimId(prefix + code.replace(/[^A-Za-z0-9_.-]/g, '_'), taken);
 }
 
 function collectElementIds(container: FlowContainer, into: Set<string>): void {
@@ -343,12 +366,6 @@ function serviceTaskBindingAttrs(
       };
     case 'builtin':
       return { 'operaton:type': binding.type };
-    default: {
-      const exhaustive: never = binding;
-      throw new Error(
-        `Unhandled ServiceTaskBinding kind: ${JSON.stringify(exhaustive)}`,
-      );
-    }
   }
 }
 
@@ -432,11 +449,18 @@ function definitionAttrs(
         [TIMER_KIND_TO_CHILD[def.timerKind]]: formalExpression(
           moddle,
           def.expression,
+          def.expressionDocumentation,
         ),
         ...(owner.exclusive === false ? { 'operaton:exclusive': false } : {}),
       };
     case 'conditional':
-      return { condition: formalExpression(moddle, def.condition) };
+      return {
+        condition: formalExpression(
+          moddle,
+          def.condition,
+          def.conditionDocumentation,
+        ),
+      };
     case 'link':
       // The engine correlates link throw and catch by `name` alone; `source`/`target` go unread.
       return { name: def.linkName };
@@ -444,12 +468,6 @@ function definitionAttrs(
     case 'terminate':
     case 'cancel':
       return {};
-    default: {
-      const exhaustive: never = def;
-      throw new Error(
-        `Unhandled EventDefinition kind: ${JSON.stringify(exhaustive)}`,
-      );
-    }
   }
 }
 
@@ -467,8 +485,12 @@ function eventDefinitionAttrs(
 function formalExpression(
   moddle: BpmnModdleInstance,
   body: string,
+  documentation?: string,
 ): ModdleElement {
-  return moddle.create('bpmn:FormalExpression', { body });
+  return moddle.create('bpmn:FormalExpression', {
+    body,
+    ...documentationChild(moddle, documentation),
+  });
 }
 
 export const TIMER_KIND_TO_CHILD: Record<
@@ -832,17 +854,32 @@ function loopCharacteristicsAttrs(
   if (loop.collection !== undefined) {
     attrs['operaton:collection'] = loop.collection;
   }
-  if (loop.elementVariable !== undefined) {
+  // The engine reads both into one field; only the data item has room for
+  // documentation.
+  if (
+    loop.elementVariable !== undefined &&
+    loop.elementVariableDocumentation !== undefined
+  ) {
+    attrs.inputDataItem = moddle.create('bpmn:DataInput', {
+      name: loop.elementVariable,
+      ...documentationChild(moddle, loop.elementVariableDocumentation),
+    });
+  } else if (loop.elementVariable !== undefined) {
     attrs['operaton:elementVariable'] = loop.elementVariable;
   }
   Object.assign(attrs, bareJobSettingAttrs(moddle, loop));
   if (loop.cardinality !== undefined) {
-    attrs.loopCardinality = formalExpression(moddle, loop.cardinality);
+    attrs.loopCardinality = formalExpression(
+      moddle,
+      loop.cardinality,
+      loop.cardinalityDocumentation,
+    );
   }
   if (loop.completionCondition !== undefined) {
     attrs.completionCondition = formalExpression(
       moddle,
       loop.completionCondition,
+      loop.completionConditionDocumentation,
     );
   }
   return {
@@ -896,7 +933,7 @@ function engineSettingAttrs(
   if (isGateway(node)) {
     return bareJobSettingAttrs(moddle, node);
   }
-  const attrs: Record<string, unknown> = jobSettingAttrs(node);
+  const attrs = jobSettingAttrs(node);
   const extensionElements = buildExtensionElements(moddle, node, roots);
   if (extensionElements !== undefined) {
     attrs.extensionElements = extensionElements;
@@ -955,8 +992,7 @@ function buildExtensionElements(
       let id: string | undefined;
       if (listener.event === 'timeout') {
         timeouts += 1;
-        id = resolveCollision(`${node.id}_timeout_${timeouts}`, roots.taken);
-        roots.taken.add(id);
+        id = claimId(`${node.id}_timeout_${timeouts}`, roots.taken);
       }
       values.push(
         buildListener(moddle, 'operaton:TaskListener', listener, roots, id),
@@ -1109,12 +1145,6 @@ function listenerBindingAttrs(
       return { delegateExpression: binding.expression };
     case 'script':
       return { script: buildScript(moddle, binding) };
-    default: {
-      const exhaustive: never = binding;
-      throw new Error(
-        `Unhandled ListenerBinding kind: ${JSON.stringify(exhaustive)}`,
-      );
-    }
   }
 }
 
@@ -1244,30 +1274,19 @@ function buildCallExtensionValues(
 function callMappingAttrs(
   mapping: CallVariableMapping,
 ): Record<string, unknown> {
-  const attrs: Record<string, unknown> = {};
+  const local = mapping.local === true ? { local: true } : {};
   switch (mapping.kind) {
     case 'all':
-      attrs.variables = 'all';
-      break;
+      return { variables: 'all', ...local };
     case 'variable':
-      attrs.source = mapping.source;
-      attrs.target = mapping.target;
-      break;
+      return { source: mapping.source, target: mapping.target, ...local };
     case 'expression':
-      attrs.sourceExpression = mapping.sourceExpression;
-      attrs.target = mapping.target;
-      break;
-    default: {
-      const exhaustive: never = mapping;
-      throw new Error(
-        `Unhandled CallVariableMapping kind: ${JSON.stringify(exhaustive)}`,
-      );
-    }
+      return {
+        sourceExpression: mapping.sourceExpression,
+        target: mapping.target,
+        ...local,
+      };
   }
-  if (mapping.local === true) {
-    attrs.local = true;
-  }
-  return attrs;
 }
 
 /**
@@ -1295,6 +1314,7 @@ function createSequenceFlow(
     attrs.conditionExpression = formalExpression(
       moddle,
       flow.conditionExpression,
+      flow.conditionDocumentation,
     );
   }
   return moddle.create('bpmn:SequenceFlow', attrs);
@@ -1328,6 +1348,11 @@ function attachDefaultFlows(
     const defaultFlowId =
       'defaultFlowId' in node ? node.defaultFlowId : undefined;
     if (defaultFlowId === undefined) continue;
+    if ('loop' in node && repeats(node.loop)) {
+      throw new Error(
+        `${node.kind} "${node.id}" is repeated and declares default flow "${defaultFlowId}", which the engine can never take.`,
+      );
+    }
     const owner = requireById(flowNodeById, node.id);
     const defaultFlow = sequenceFlowById.get(defaultFlowId);
     if (defaultFlow === undefined) {

@@ -33,14 +33,14 @@ How should `irToDsl` decide which subgraphs can be phrased as `if`, `while`, `pa
 - Ad-hoc recursive pattern matching without formal control-flow analysis: there is no criterion to check a match against, so an unstructured graph has no defined outcome and the decompiler is free to loop or to throw.
 - An `if` chain for a step with more than one route out, and jumps carrying no conditions where a split degrades: the print of a common modeler shape, a task with two plain flows, then runs one route where the model runs both, and a degraded split's conditions are discarded with no marker for the reader to find.
 - Refusing a step with more than one outgoing flow on import: the printer never sees the shape, but the engine deploys and runs it, and the import contract refuses only what the engine refuses or what changes a stored value.
-- Keeping a split whose every route is conditioned as jumps wherever it sits: the print reports the drop and no rule is added, but a condition on every route with no default named is the common modeler shape, and the process the thesis demonstrates on came back running differently.
+- Keeping a split whose every route is conditioned as jumps wherever it sits: the print reports the drop and no rule is added, but a condition on every route with no default named is the common modeler shape, and the Operaton invoice example would come back running differently.
 - Deferring the chain that holds an elided synthesized end to the last position in its block: it conflicts with the elided-start-first rule whenever one chain holds both, only one chain can be last where there are several elided ends, and printing the end in place covers every shape it would.
 
 ## Decision Outcome
 
 Chosen option: dominator and post-dominator analysis with a fixed pattern catalog and a `goto` fallback, because dominator analysis gives a mechanically checkable criterion for each structured construct, and the edges the catalog cannot fold degrade to `goto` instead of to a failure.
 
-The analysis is `analyzeCfg(process): CfgAnalysis`, a pure function over the IR with `immediateDominator`, `immediatePostDominator`, `dominates`, `postDominates`, `backEdges`, `outgoing` and `incoming` queries.
+The analysis is `analyzeCfg(container): CfgAnalysis`, a pure function over one process or sub-process with `immediateDominator`, `immediatePostDominator`, `dominates`, `postDominates`, `backEdges`, `outgoing` and `incoming` queries.
 `VIRTUAL_ENTRY` and `VIRTUAL_EXIT` give the dominator algorithm a unique single entry and exit.
 
 The pattern catalog:
@@ -69,12 +69,10 @@ The guard clause answers when exactly one route is unconditioned, that route bei
 Operaton takes the first route in document order that carries no condition or one that holds, so the chain keeps that order: a route without a condition listed before a conditioned one, the guard clause's continuation included, heads its branch as `true` in its place, and the routes after it stay in the chain although neither the engine nor the rebuilt split ever takes them.
 The enclosing continuation is the stop node the enclosing construct handed down, and answers only while that node is defined, no route is unconditioned, and at least one route's target is dominated by the split and post-dominated by the stop node; the chain then walks that route inline, prints the routes that leave the region as jumps, and stops at the stop node where the enclosing construct carries on.
 The same rule serves a split inside a `while` body, a `do` body and a branch, including a split inside a guarded branch.
-Outside any enclosing construct, a split whose every route is conditioned and that has no default continues at a route whose target has no other incoming flow, which leaves that target unprinted and outside any loop the split is not in: its last route in document order when that one qualifies, else its first that does.
-The recompiled split gains a fallback the model never named, which the print reports, and that fallback runs into the statement the print put after the `if`, so a second print reads the same.
-The last route prints as the chain's fall-through rather than as an empty branch, so the print builds without the validator's empty-branch warning.
-Its condition gives way to the fallback, and since Operaton tries the routes in document order and so tries that route last anyway, only the no-match case changes, which the print reports.
-Any other route keeps its condition over an empty branch, since dropping it would make the route the engine tries first the one the rebuilt split tries last.
-With no such route the jumps stay, closing with no `else`.
+Outside any enclosing construct, a split whose every route is conditioned and that has no default continues at a route whose target has no other incoming flow or is already printed: its last route in document order when that one qualifies, else its first that does.
+That route keeps its condition over an empty branch, the walk carries on at its target after the `if`, and a second print reads the same.
+Such a split stops the run when no condition holds, so its chain closes with `else fail` ([ADR-0031](0031-inclusive-and-event-based-gateways.md)) and the rebuilt split stops where the model stops.
+With no such route the jumps stay, under the same `else fail`.
 A loop gateway's own exit condition prints as the fall-through after the `} while (...)` line and is reported as dropped.
 Every route of a folded exclusive split gets a form: a condition heads its branch, and a route carrying none heads a branch as `true`, takes the chain's `else`, or runs straight into the join as the chain's fall-through, since heading that last route instead would put a `true` over an empty branch and leave the rest of the chain unreachable.
 
@@ -105,7 +103,7 @@ The compiler mints such an end in `lowerContainerBody` and `lowerBoundaryHandler
 `isElidedOnPrint` stays the model-level predicate and keeps answering "the printer may drop this end", which `warnRefusedStatements`, `forwardToRealTarget` and the importer's `warnElidedNamedDrop` read.
 Whether the printer does drop the end is a fact about print order, known only once every chain of the block is on the page, so that half of the decision sits in the emitter: `emitNode` records the end with the position it would have printed at, and `Emitter.emit` then leaves out an end nothing followed and splices any other back at its position, with one report per printed end, in page order.
 The printed source draws exactly one validator error, on the printed `end` line, and renaming the id in the model makes the source clean and round-trips the document structurally unchanged.
-The import warning on a labelled plain end describes both outcomes, since the importer cannot know which position the printer will give an end: where the script can do without the end it is left out and its label with it, and anywhere else it prints under a name the script refuses.
+The import warning on a plain end carrying documentation describes both outcomes, since the importer cannot know which position the printer will give an end: where the script can do without the end it is left out and its documentation with it, and anywhere else it prints under a name the script refuses.
 Either way the fix it names is a rename in the diagram.
 
 ### Consequences
@@ -114,15 +112,14 @@ Either way the fix it names is a rename in the diagram.
 - Good, because AND fork and join pairs are recovered as `parallel` blocks without special-casing the decompiler.
 - Good, because a step with two plain routes or with a weighed route beside a plain one round-trips to the routing the engine runs, with no report.
 - Good, because the conditions of a degraded split survive on its jumps, and the marker line puts the reader at the split rather than leaving the jumps to explain themselves.
-- Good, because the fork printer, the invented-fallback report and the fallback-condition report each have one home, and a gateway and a step share it.
+- Good, because the fork printer, the `else fail` test and the fallback-condition report each have one home, and a gateway and a step share it.
 - Good, because the CFG analysis is a pure, stateless utility with its own test suite, auditable independently of the emitter, and the same dominator queries answer the own merge, the clean join and the enclosing continuation, while `convergence` reads forward reachability and the guard clause only which routes carry a condition.
 - Good, because a split whose every route is conditioned inside a loop body prints its staying routes inline, so the Operaton invoice example prints its review call inside the loop and the rebuilt process keeps the loop.
   A cascade of such splits inside one body prints as nested chains, each continuing at the same stop node, and the rule adds no state to the walk.
-- Good, because the restructurer reports what it drops instead of leaving the caller to find it, including where the drop changes what a recompiled document runs.
-  A fallback re-derived on an imported OR fork that named none is one such report: `InclusiveGatewayActivityBehavior` throws a stuck execution when every branch of such a fork carries a condition and none of them holds, while the printed block falls through, so a document recompiled from that script runs on where the model would have stopped.
+- Good, because the restructurer reports what it drops instead of leaving the caller to find it, including where the drop changes what a recompiled document runs, such as a degraded split whose kind is written nowhere.
 - Good, because a synthesized plain end that is not its block's tail is refused loudly instead of rewiring its chain into whatever the printer appended next: the reader finds a reserved id on the page, a print warning, and a validator error naming the element to rename.
 - Neutral, because a route running straight into an enclosing construct's stop node prints as an empty branch, which the validator warns about; the condition on it survives, where a jump would have lost the branch.
-- Neutral, because a step whose routes reconverge at a merge of another kind, or at a step, degrades to jumps under the marker: the block form synchronizes at a merge of its own kind, which the model does not have there.
+- Neutral, because a step whose routes reconverge at a merge of another kind degrades to jumps under the marker: the block form synchronizes at a merge of its own kind, which the model does not have there.
 - Neutral, because a jump into an elided end is still dropped and marked.
   `forwardToRealTarget` reads the model-level answer, and at the top level the jump is printed before the end's position is known; for a plain end in the same container the re-derived tail end is the same terminal, so the process runs the same and the marker is the only cost.
 - Neutral, because RPST would recover more structured patterns, for example nested switch-like gotos, but is left for later, once the scope justifies the added machinery.
@@ -130,7 +127,7 @@ Either way the fix it names is a rename in the diagram.
 - Bad, because a target the stop node post-dominates but the split does not dominate is walked inline by the chain all the same, the way the guard clause walks it, so a target reached from elsewhere leaves its other edges as jumps.
 - Bad, because "tail" for a synthesized end is decidable only after the block's passes, so the emitter carries a deferred list and a resolve step that a reader has to find.
 - Bad, because the decompiler always produces parseable source but not always source that validates, and not every edge survives.
-- Bad, because a modeller's document with a default-named plain end that is not last prints a reserved id and is refused until renamed, and the import-side label warning can only name the two outcomes rather than the one that will happen.
+- Bad, because a modeller's document with a default-named plain end that is not last, or that carries a label, prints a reserved id and is refused until renamed, and the import-side documentation warning can only name the two outcomes rather than the one that will happen.
 - Bad, because a step whose routes merge at a merge of another kind prints jumps under a marker where an `if` chain would read better, that chain being a choice the model is not.
 - Bad, because a branch that ends inside a loop body, a `do { end } while`, a loop gateway the compiler leaves without an incoming flow, and a post-test loop whose body ends inside a branch still print as jumps or markers, the last of them a jump the validator refuses; these are reported and pinned as they are.
 

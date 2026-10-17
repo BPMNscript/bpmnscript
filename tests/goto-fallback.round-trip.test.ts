@@ -128,8 +128,7 @@ describe('an edge with no statement form degrades without inventing a target, an
     [
       // Every route of both gateways is conditioned and none is a default, so
       // the split's post-dominator lies outside the loop. The chain closes with
-      // no `else`, so the recompiled split falls through to the loop gateway:
-      // `Approve` gains the two routes it takes.
+      // `else fail`, so the recompiled split reaches nothing new.
       'a split inside a loop body whose every route is conditioned keeps the route that stays in the loop',
       proc(
         'ReviewLoop',
@@ -165,7 +164,7 @@ describe('an edge with no statement form degrades without inventing a target, an
         '      goto Pay',
         '    } else if (!approved) {',
         '      user Review',
-        '    }',
+        '    } else fail',
         '  } while (clarified)',
         '  end End_2',
         '  user Pay',
@@ -173,7 +172,7 @@ describe('an edge with no statement form degrades without inventing a target, an
         '}',
         '',
       ],
-      ['Approve->Approve', 'Approve->End_2'],
+      [],
     ],
     [
       // A bare `goto` beside the fall-through would leave the rest
@@ -401,15 +400,15 @@ const compiled = async (source: string) => astToIr(await parseToAst(source));
 const compiledUnvalidated = async (source: string) =>
   astToIr(await parseUnvalidated(source));
 
-// Fuzz-drawn shapes: each row pins the print's warning categories and whether
-// it validates.
+// Fuzz-drawn shapes: each row pins the print and its warnings, and the print
+// validates.
 describe('composite shapes through compile, import and print', () => {
   it.each<
     [
       title: string,
       shape: () => Promise<BpmnProcess>,
-      categories: string[],
-      valid: boolean,
+      printed: string,
+      warnings: [category: string, elementId: string][],
     ]
   >([
     [
@@ -432,8 +431,23 @@ describe('composite shapes through compile, import and print', () => {
             '}',
           ].join('\n'),
         ),
+      [
+        'process p {',
+        '  escalation E',
+        '  start S',
+        '  if (true) {',
+        '    while (true) {',
+        '      script A ```javascript',
+        'x = 1',
+        '```',
+        '    }',
+        '    throw escalation X(E)',
+        '  }',
+        '  end Done',
+        '}',
+        '',
+      ].join('\n'),
       [],
-      true,
     ],
     [
       'a pre-test loop whose body ends prints as a guard clause jumping to the body',
@@ -441,8 +455,19 @@ describe('composite shapes through compile, import and print', () => {
         compiled(
           'process p {\n  start S\n  while (true) {\n    user A\n    end X\n  }\n  user B\n  end Done\n}',
         ),
+      [
+        'process p {',
+        '  start S',
+        '  if (true) {',
+        '    user A',
+        '    end X',
+        '  }',
+        '  user B',
+        '  end Done',
+        '}',
+        '',
+      ].join('\n'),
       [],
-      true,
     ],
     [
       'a fork with an empty weighed branch beside an ending one prints whole',
@@ -450,8 +475,21 @@ describe('composite shapes through compile, import and print', () => {
         compiled(
           'process p {\n  start S\n  parallel {\n    if (true) {\n    }\n    {\n      end X\n    }\n  }\n  end Done\n}',
         ),
+      [
+        'process p {',
+        '  start S',
+        '  parallel {',
+        '    if (true) {',
+        '    }',
+        '    {',
+        '      end X',
+        '    }',
+        '  }',
+        '  end Done',
+        '}',
+        '',
+      ].join('\n'),
       [],
-      true,
     ],
     [
       'a fork carrying settings with an ending branch prints whole',
@@ -459,29 +497,70 @@ describe('composite shapes through compile, import and print', () => {
         compiled(
           'process p {\n  start S\n  parallel (retryCycle: "R1/PT1M") {\n    {\n      user A\n    }\n    {\n      end X\n    }\n  }\n  end Done\n}',
         ),
+      [
+        'process p {',
+        '  start S',
+        '  parallel (retryCycle: "R1/PT1M") {',
+        '    {',
+        '      user A',
+        '    }',
+        '    {',
+        '      end X',
+        '    }',
+        '  }',
+        '  end Done',
+        '}',
+        '',
+      ].join('\n'),
       [],
-      true,
     ],
     [
-      'a race branch holding a post-test loop whose body ends draws a jump into the branch',
+      'a race branch holding a post-test loop whose body ends leaves the loop test out',
       () =>
         compiledUnvalidated(
           'process p {\n  start S\n  await {\n    timer("PT1M") {\n    }\n    message("m") {\n      do {\n        end X\n      } while (true)\n    }\n  }\n  end Done\n}',
         ),
-      ['refusedStatement'],
-      false,
+      [
+        'process p {',
+        '  start S',
+        '  await {',
+        '    timer("PT1M") {',
+        '    }',
+        '    message("m") {',
+        '      end X',
+        '    }',
+        '  }',
+        '  end Done',
+        '}',
+        '',
+      ].join('\n'),
+      [['unreachable', 'Gateway_p_1_b1_0_loop']],
     ],
     [
-      'a fork branch holding a post-test loop whose body ends draws a jump into the branch',
+      'a fork branch holding a post-test loop whose body ends leaves the loop test out',
       () =>
         compiledUnvalidated(
           'process p {\n  start S\n  parallel {\n    {\n      user F\n    }\n    if (true) {\n      do {\n        end S2\n      } while (true)\n    }\n  }\n  end Done\n}',
         ),
-      ['refusedStatement'],
-      false,
+      [
+        'process p {',
+        '  start S',
+        '  parallel {',
+        '    {',
+        '      user F',
+        '    }',
+        '    if (true) {',
+        '      end S2',
+        '    }',
+        '  }',
+        '  end Done',
+        '}',
+        '',
+      ].join('\n'),
+      [['unreachable', 'Gateway_p_1_b1_0_loop']],
     ],
     [
-      'a post-test loop whose body ends prints its unreachable head as a jump',
+      'a post-test loop whose body ends leaves its unreachable head and what follows it out',
       () =>
         Promise.resolve(
           proc(
@@ -503,22 +582,25 @@ describe('composite shapes through compile, import and print', () => {
             ],
           ),
         ),
-      [],
-      false,
+      ['process DanglingLoopHead {', '  start S', '  end X', '}', ''].join(
+        '\n',
+      ),
+      [
+        ['unreachable', 'Gateway_L_loop'],
+        ['unreachable', 'Done'],
+      ],
     ],
-  ])('%s', async (_title, shape, categories, valid) => {
+  ])('%s', async (_title, shape, printedSource, printedWarnings) => {
     const { ir: imported, warnings } = await xmlToIr(
       await irToXml(await shape()),
     );
     expect(warnings).toEqual([]);
     const printed = irToDsl(imported);
 
-    expect(printed.warnings.map((w) => w.category)).toEqual(categories);
-    expect(
-      await parseToAst(printed.source).then(
-        () => true,
-        () => false,
-      ),
-    ).toBe(valid);
+    expect(printed.source).toBe(printedSource);
+    expect(printed.warnings.map((w) => [w.category, w.elementId])).toEqual(
+      printedWarnings,
+    );
+    expect(await validationErrors(printed.source)).toEqual([]);
   });
 });

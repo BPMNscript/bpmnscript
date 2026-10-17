@@ -103,8 +103,9 @@ describe('bundled asset resolution and transform under the shim', () => {
 
       const { stdout } = result;
 
-      expect(stdout).toContain('PROCESS_ID:invoice-approval');
-      expect(stdout).toContain('bpmn:definitions');
+      const [idLine, ...xml] = stdout.split('\n');
+      expect(idLine).toBe('PROCESS_ID:invoice-approval');
+      expect(xml.join('\n')).toContain('<bpmn:definitions');
     },
   );
 });
