@@ -112,7 +112,7 @@ Neither that shape nor the one Operaton refuses is authorable, so the extra widt
 - Good, because neither construct spends a reserved word; reserving `race` would take `var race: string` and `user race` out of the language.
 - Good, because a compiled inclusive fork beside an unconditioned branch prints back without a warning and re-parses without an error.
 - Good, because a `while` whose body ends in a loop compiles.
-- Good, because an imported split whose routes are all conditioned and that names no default rebuilds unchanged, the invoice variant included.
+- Good, because an imported split whose routes are all conditioned and that names no default rebuilds unchanged when it prints structured, the invoice variant included.
 - Bad, because a conditioned `parallel` reads as one construct but compiles to either of two BPMN elements, so a BPMN-literate reader must read every branch.
 - Bad, because `irToDsl` changes its return shape, touching every call site, and the drop that motivated it costs the reader a gateway's name rather than anything the process does.
 - Bad, because the label comes back on a BPMN-to-BPMN pass but never on a BPMN-to-DSL one, so a decompiled and recompiled document loses every gateway label.

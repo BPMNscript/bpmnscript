@@ -60,7 +60,8 @@ A value inside an element is documented by a key named for the word that introdu
 
 `var <name>: <type>` declares a process variable so its uses get type-checked.
 The types are `string`, `number`, `boolean`, `date`, `json`, and `any`.
-Reading a variable nothing declares draws a warning, using it against its declared type an error, and declaring one twice an error.
+Reading a variable nothing declares draws a warning, and declaring one twice is an error.
+Using a declared variable where its type cannot fit, as a condition or an operand of `<`, `<=`, `>`, `>=`, arithmetic, `&&` or `||`, is an error; `==` and `!=` are not checked.
 A form field, a catch binding, a parameter and a repetition's element declare a variable as well, and the repetition variables listed under [Repetition](#repetition) need no declaration.
 The importer declares `var x: any` for every variable a printed script reads and nothing else declares ([ADR-0015](../../docs/decisions/0015-the-print-declares-every-variable-it-reads.md)).
 
@@ -126,13 +127,14 @@ An element also carries members, which are not statements:
 | [`property x = ...`](#external-task-extras)                       | a key and text on a form field or an external task   | `operaton:property`        |
 | [`on create(class: "...")`](#listeners)                           | code run on a step's lifecycle                       | execution or task listener |
 
-Every element that takes settings takes the [engine settings](#engine-settings) and an execution listener, and most take input and output parameters.
+Every step, event, and handler takes the [engine settings](#engine-settings) and an execution listener, except an `emit link`, and most take input and output parameters.
+The gateway statements take the engine settings alone, and the process header takes neither.
 The ten activities (`user`, `service`, `script`, `step`, `send`, `receive`, `decide`, `subprocess`, `attempt`, and `call`) also take a repetition clause between the name and the parens.
 Inside an element's braces, `on` declares a listener; at statement position it declares an event handler, which always carries a body of statements ([ADR-0020](../../docs/decisions/0020-listeners-reuse-on-inside-the-attribute-block.md)).
 
 A few rules hold for every body:
 
-- A process, subprocess, attempt block, handler body, or loop body can't be empty, and an empty `if` or `parallel` branch draws a warning.
+- A process, subprocess, attempt block, or loop body can't be empty, and an empty handler body or an empty `if`, `parallel`, or `await { }` branch draws a warning.
 - A step after an `end`, a `throw`, a `goto`, an `emit link`, or a block whose every branch ends that way can never run, which is an error, unless a `goto` targets it.
   A `start`, an `await link`, or a handler can follow such a statement.
 - A `do` body that always ends or redirects the flow is an error, since nothing would reach the loop's check.
@@ -321,7 +323,7 @@ process tally {
 The tags are `juel`, `javascript`, `js` or `ecmascript`, `groovy`, `python` or `py`, `ruby` or `rb`, and `feel`, in any case.
 The tag runs to the first whitespace, so on a one-line fence a space separates it from the code.
 Only `juel` runs on every Operaton installation; the others need a JSR-223 script engine on the engine's classpath, which is looked up the first time the script runs, not at deployment.
-An unknown tag, an empty body, and an unterminated fence are errors, here and on every other fenced script (a listener, a parameter value).
+An unknown tag and an unterminated fence are errors, and an empty body draws a warning, here and on every other fenced script (a listener, a parameter value).
 
 ## What an element carries
 
@@ -336,7 +338,7 @@ Five engine settings are legal on every element that takes settings:
 
 `asyncBefore`, `asyncAfter` and `exclusive` are unquoted booleans, and `retryCycle` is quoted.
 A `retryCycle` the engine cannot read is dropped at deployment rather than refused, so it draws a warning.
-`jobPriority` is an integer or a `"${...}"` expression.
+`jobPriority` is an integer, a quoted integer, a bare variable name, or a `"${...}"` expression.
 
 The job exists only when `asyncBefore` or `asyncAfter` is set, so `exclusive`, `jobPriority`, or `retryCycle` without one of them configures nothing and draws a warning.
 Two cases are exempt.
@@ -440,12 +442,13 @@ A mapping headed by a word other than `error`, missing its `when`, or naming an 
 
 A listener runs code on a step's lifecycle and goes in the element's braces as `on <event>` plus what to run.
 
-| Listener  | Legal on                      | Events                                                            |
-| --------- | ----------------------------- | ----------------------------------------------------------------- |
-| execution | every element taking settings | `start`, `end`                                                    |
-| task      | a `user` task                 | `create`, `assignment`, `complete`, `update`, `delete`, `timeout` |
+| Listener  | Legal on                                          | Events                                                            |
+| --------- | ------------------------------------------------- | ----------------------------------------------------------------- |
+| execution | every step, event, and handler except `emit link` | `start`, `end`                                                    |
+| task      | a `user` task                                     | `create`, `assignment`, `complete`, `update`, `delete`, `timeout` |
 
 A listener runs exactly one thing: a `class`, `expression`, or `delegate` in its parens, valued as on a service task, or a fenced script.
+A listener with both a fenced script and a `class`, `expression`, or `delegate` is an error.
 A `class` or `delegate` listener may open braces holding [fields](#field-injection).
 `on timeout` carries the timer saying when it fires, an `after`, `at`, or `every` particle and a time, and no other event takes one.
 The same event may carry several listeners on one element, and each compiles to its own listener in the order written.
@@ -543,7 +546,7 @@ A hosted handler (`on Host: ...`) is the exception: its body shares the host's c
 A host-less handler written inside a hosted handler's body therefore guards the whole surrounding container, not just that body.
 
 A `goto` into a `parallel` or `await { }` branch from outside it is an error, since the token would leave the join waiting for branches the run never entered.
-A target across a boundary fails to resolve, and the message explains the boundary when the name exists elsewhere in the process:
+A `goto` target or a hosted handler's host across a boundary fails to resolve, and the message explains the boundary when the name exists elsewhere in the process:
 
 ```text
 'X' is inside subprocess 'Y'
@@ -561,6 +564,7 @@ A target across a boundary fails to resolve, and the message explains the bounda
 Its [engine settings](#engine-settings) go in parens on the statement head, after the condition for `if` and the loops.
 `if`, `parallel`, and `await { }` also create a join, whose settings share the same parens with a `join` prefix: `joinAsyncBefore`, `joinAsyncAfter`, `joinExclusive`, `joinJobPriority`, `joinRetryCycle`.
 An `if` chain is one gateway however many `else if` branches it has, so an `else if` takes no parens of its own.
+A `join` job key without `joinAsyncBefore` or `joinAsyncAfter` beside it configures nothing and draws a warning, as on any element.
 
 ```bpmnscript
 process order-fulfillment {
@@ -700,7 +704,7 @@ process payment {
 
 A catch binding pairs a field of the event (`code`, and for `error` also `message`) with the variable that receives it, like the `e` in `catch (Exception e)`.
 Leaving the code out, as in `on error { }`, catches any event of that kind.
-`alongside` makes a handler non-interrupting, so the guarded body keeps running beside it.
+`alongside`, written as a bare word in the trigger's parens as in `on Review: timer("PT1H", alongside) { ... }`, makes a handler non-interrupting, so the guarded body keeps running beside it.
 
 `throw <trigger>` raises an event and ends the current path, and `emit <trigger>` raises it and continues.
 `emit link` is the one emit that ends its path, see [Link events](#link-events).
@@ -736,14 +740,14 @@ What each trigger means:
 - `cancel` gives up an `attempt` block, see [Giving a block of work up](#giving-a-block-of-work-up).
 - `link` is a jump drawn as two events, see [Link events](#link-events).
 
-Two handlers that register the same catch on one scope are an error; a handler inside a block and one attached to that block share the scope.
+Two handlers that register the same catch on one scope are an error; for a message or a signal, a handler inside a block and one attached to that block share the scope.
 So is an escalation catch-all beside a coded escalation catch on the same scope.
 
 ### Timers
 
 A timer value has to fit its particle:
 
-- a duration (`after`, or a bare value) is an ISO 8601 duration such as `"PT8H"`, alone or beside a start or end date-time,
+- a duration (a bare value, or `after` on an `on timeout` listener) is an ISO 8601 duration such as `"PT8H"`, alone or beside a start or end date-time,
 - `at` is an ISO date-time or a period,
 - `every` is a repeat such as `"R3/PT10M"`, a six-field cron expression, or a nickname such as `"@daily"`.
 
@@ -908,7 +912,7 @@ The engine limits how many starts a scope has, and each limit is an error:
 - A process has one plain or timer start, one message or signal start per name, and one condition start per condition.
 - A body that doesn't open with a `start` gets a plain one from the compiler, which counts, so a plain or timer start further down is a second one.
 
-A process whose starts all carry a message, signal, or condition trigger can't be started by key, so it draws a warning.
+A process with two or more starts that all carry a message, signal, or condition trigger can't be started by key, so it draws a warning.
 The engine shows a start form only on the plain or timer start, so a `form` on any other start draws a warning too.
 
 ### Ending every path

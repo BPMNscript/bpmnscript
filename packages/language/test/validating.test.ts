@@ -314,6 +314,9 @@ const DECISION_BINDINGS = `'class', 'expression', 'delegate', 'topic', 'type', o
 /** No `type`: a thrown message has no member block for a built-in behaviour's fields. */
 const THROW_BINDINGS = `'class', 'expression', 'delegate', or 'topic'`;
 const LISTENER_BINDINGS = `'class', 'expression', or 'delegate'`;
+const scriptListenerBindingConflict = (subject: string) =>
+  `${subject} declares more than one binding: 'class' and a fenced script body\n` +
+  `note: exactly one of ${LISTENER_BINDINGS}, or a fenced script body, is allowed`;
 const emptyBinding = (key: string, noun: string) =>
   `setting '${key}' is empty\nhelp: name the ${noun}`;
 const bindingRequired = (subject: string, keys: string, alternative = '') =>
@@ -4118,6 +4121,7 @@ checks('Validation - injected fields', [
         LISTENER_FIELD_BINDINGS,
       ),
       scriptListenerFieldMessage(`the 'on start' listener`),
+      scriptListenerBindingConflict(`the 'on start' listener`),
       scriptListenerFieldMessage(`the 'on start' listener`),
       unknownDirectionMessage('input', ['field']),
     ],
@@ -4245,6 +4249,8 @@ checks('Validation - listeners', [
   user U10 { on timeout whenever "PT1H2" (class: "com.example.T3") }
   user U11 { on start ${FENCE}php\necho 1;\n${FENCE} }
   user U12 { on start ${FENCE}groovy\n${FENCE} }
+  user U13 { on start(class: "com.example.C6") ${FENCE}groovy\nx = 1\n${FENCE} }
+  user U14 { on end(wibble: "w") ${FENCE}groovy\nx = 1\n${FENCE} }
 }`,
     [
       taskListenerOnly('create', 'a service task'),
@@ -4272,6 +4278,8 @@ checks('Validation - listeners', [
       unknownParticle('whenever'),
       unsupportedScriptTag(`the 'on start' listener`, 'php'),
       emptyScript(`the 'on start' listener`),
+      scriptListenerBindingConflict(`the 'on start' listener`),
+      notValidOn('wibble', 'a listener'),
     ],
   ],
   [

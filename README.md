@@ -2,7 +2,7 @@
 
 Write executable business processes as text, compile them to BPMN 2.0 XML, and read existing BPMN files back as text.
 
-> Status: version 0.1.0 is the first release, from a bachelor's thesis project.
+> Status: version 0.1.1 is the current release, from a bachelor's thesis project.
 > Download the `.vsix` of the VS Code extension from the GitHub Release, or build everything from source as described below.
 > The packages are not published to npm or the VS Code Marketplace.
 

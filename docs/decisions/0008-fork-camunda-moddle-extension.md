@@ -31,12 +31,14 @@ How should BPMNscript register Operaton's extension attributes with `bpmn-moddle
 ## Decision Outcome
 
 Chosen option: "Ship a trimmed fork", because it avoids namespace collisions, eliminates fragile string-replacement post-processing, and keeps the descriptor small and auditable.
-The fork is based on `camunda-bpmn-moddle/resources/camunda.json` from the `camunda/camunda-bpmn-moddle` repository on GitHub, with the prefix and namespace URI replaced and only the attributes BPMNscript uses kept.
+The fork is based on `camunda-bpmn-moddle/resources/camunda.json` from the `camunda/camunda-bpmn-moddle` repository on GitHub, with the prefix and namespace URI replaced, cut down to what the compiler writes and the importer has to recognize, and adjusted where the importer must see what a document carries.
+A parameter holds its nested value in a list, since `bpmn-moddle` keeps only the last of two children in a single-valued property without a warning, and `isStartableInTasklist` is text, since Operaton accepts any capitalization of `true`.
+Types the compiler never writes, such as connectors, stay so that the importer recognizes and refuses or reports them.
 
 ### Consequences
 
 - Good, because emitted XML correctly carries `xmlns:operaton` and `operaton:`-prefixed attributes without post-processing.
-- Good, because the descriptor defines only the attributes actually used, which keeps it easy to review and extend.
+- Good, because the descriptor defines only what the compiler writes and the importer must recognize, which keeps it easy to review and extend.
 - Good, because no external dependency is needed for the Operaton namespace.
 - Bad, because if Operaton publishes an official moddle extension in the future, the local fork must be replaced.
 - Bad, because the fork must be maintained manually when new Operaton attributes are needed.

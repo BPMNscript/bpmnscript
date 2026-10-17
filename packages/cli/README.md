@@ -40,7 +40,7 @@ The import and print rules behind those warnings are in [packages/transform/READ
 | `0`  | Success, with or without warnings                                                                  |
 | `1`  | Validation errors or no process on `build`, a BPMN construct the language can't express on `parse` |
 | `2`  | A file or path problem, or input that can't be read as BPMN XML                                    |
-| `3`  | An unexpected exception inside a transform, which is a bug in `bpmns`                              |
+| `3`  | An unexpected exception inside any transform, the importer included, which is a bug in `bpmns`     |
 
 A command that exits `1` writes nothing.
 Every message opens with a headline naming what is wrong and where, with its `note:` and `help:` lines indented beneath it.

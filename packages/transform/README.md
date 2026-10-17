@@ -129,7 +129,7 @@ const { source, warnings: printWarnings } = irToDsl(ir); // sync; warns for what
 ```
 
 `exporterVersion` is written on `bpmn:definitions` and defaults to `0.0.0`.
-`src/index.ts` also exports the IR types, `isGateway` and `gatewayDefaultFlowId` for reading them at runtime, the deterministic id helpers, the JUEL parser (`parseJuel`, `renderRawFallback`), the `Unsupported*Error` classes, `LayoutError`, the `ImportWarning` and `PrintWarning` types, and the input checks the CLI and the extension share (`xmlInputProblem`, `readableParseError`).
+`src/index.ts` also exports the IR types, `isGateway` and `gatewayDefaultFlowId` for reading them at runtime, the deterministic id helpers, the JUEL parser (`parseJuel`, `renderRawFallback`), the `Unsupported*Error` classes, `LayoutError`, `MalformedDocumentError`, the `ImportWarning` and `PrintWarning` types, and the input checks the CLI and the extension share (`xmlInputProblem`, `readableParseError`).
 
 ## The import contract
 
@@ -138,7 +138,8 @@ What it cannot represent falls into two buckets, split where the engine's own pa
 
 Content the IR cannot express at all is refused: `xmlToIr` throws a subclass of `UnsupportedConstructError` before producing any IR, so there is no partial output.
 Content Operaton refuses to deploy is refused the same way, since there is nothing that runs to write back, and the message names the engine method that fails the deployment.
-A document whose root is not `bpmn:definitions` or a sequence flow whose `sourceRef` or `targetRef` resolves to nothing is malformed rather than unsupported and throws a plain `Error`, which the CLI reports as a parse failure and exits `2`.
+A document that is malformed rather than unsupported, such as one moddle cannot read, one whose root is not `bpmn:definitions`, or one with a sequence flow whose `sourceRef` or `targetRef` resolves to nothing, throws a `MalformedDocumentError`, which the CLI reports as a parse failure and exits `2`.
+Any other exception from `xmlToIr` is a bug, and the CLI exits `3`.
 Content the IR does not carry (an extra Operaton extension attribute, a lane, a text annotation) comes back through the `warnings` array instead.
 Every drop of a setting the engine reads names the method that reads it and says the document written back runs without it, so a reader can tell a cosmetic drop from one that changes what runs.
 
@@ -156,7 +157,7 @@ A connector is refused under either prefix wherever it sits: beside a service, s
 What is dropped without a warning is an attribute `xmlToIr` does not read, and it comes in two shapes.
 One is an attribute in a foreign namespace written directly on a mapped BPMN element, which is where an editor parks its own bookkeeping.
 The same attribute on an Operaton extension element the IR reads is reported, a whole foreign-namespace extension element is reported too, and an attribute written in no namespace at all that BPMN does not declare is reported as well, since no editor writes there.
-The other is a BPMN attribute this surface neither reads nor reports: a process's `processType` or `isClosed`.
+The other is a BPMN attribute neither Operaton nor this surface reads, such as a process's `processType` or `isClosed`, or a send task's `messageRef`.
 Each of those is content left out.
 A lone `operaton:resource` on a sequence flow's condition expression or a conditional event definition's condition is the one exception that is reported rather than dropped: Operaton reads it only alongside a `language`, so on its own it reaches nothing, and the condition still imports as the expression its body writes.
 
@@ -303,17 +304,17 @@ A call activity's `variableMappingClass` and `variableMappingDelegateExpression`
 `lane` covers a `bpmn:Lane`, one warning per lane, a lane nested in a `bpmn:childLaneSet` included.
 The flat IR has no lane concept, so every step lands in one process and the assignment goes.
 
-`label` covers a `name` on an event handler, a typed end event, an intermediate throw, an intermediate catch, or a boundary event.
+`label` covers a `name` on an event handler, a throw end event, an intermediate throw, an intermediate catch, or a boundary event.
 Those read from their trigger and code, so a label has nowhere to render.
 A link event's `name` is written from its link name on export, so a `name` equal to the link name is derived and a differing one alone is reported.
 A sequence flow's `name` is reported here when it differs from the label the rebuilt document derives, which is the condition's body inside its `${...}` on a conditioned flow and nothing on a plain one; `name=""`, which the Modeler writes on every unconditioned flow, is not a label.
 It also covers a label on a start whose id is the one the compiler mints for its container (`StartEvent_<container>`), since a script cannot spell that id back and the statement that would have carried the label is left out whole; a label on an end under such an id (`EndEvent_<container>`, or `EndEvent_<boundary>` for a boundary escape) makes the end print under its reserved id, and the print reports it.
-Any other id prints, respelled if the script cannot spell it, with the print reporting the rename ([ADR-0010](../../docs/decisions/0010-deterministic-synthesized-ids.md)).
+Any other id prints as written, in backticks where the `ID` terminal cannot spell it ([ADR-0010](../../docs/decisions/0010-deterministic-synthesized-ids.md)).
 
 `unreferencedRoot` covers a `bpmn:Message` or `bpmn:Signal` root that nothing in the process references, a receive task's `messageRef` included.
 It also covers an error or escalation root carrying no code, which nothing can key it by, unless it is an error root carrying an `operaton:errorMessage`, which refuses; one carrying a code imports as a declaration whether or not anything raises it.
 
-`documentation` covers `bpmn:documentation` at every position where `label` above is warned, for the same reason: an event handler, a typed end event, an intermediate throw, an intermediate catch, a boundary event, and a start or an end whose id is the one the compiler mints for its container.
+`documentation` covers `bpmn:documentation` at every position where `label` above is warned, for the same reason: an event handler, a throw end event, an intermediate throw, an intermediate catch, a boundary event, and a start or an end whose id is the one the compiler mints for its container.
 It also covers a `bpmn:documentation` on a position that reads no `name` at all: the definitions root, an event definition, an external task's `operaton:errorEventDefinition`, an Error/Escalation/Message/Signal root, a multi-instance loop characteristics element, a `bpmn:inputDataItem` without a name, and a sequence flow.
 A second `bpmn:documentation` child on one element, or one whose `textFormat` is set to anything but plaintext, falls under the category regardless of position.
 Everywhere else the text is carried onto the IR node alongside its `name` ([ADR-0012](../../docs/decisions/0012-honest-bpmn-import.md)).
@@ -364,12 +365,14 @@ On a form field that is a bound on a type its validator refuses, a bound whose `
 A literal default the field's type cannot convert goes the same way: a `number` default that is not an integer, which `LongFormType.convertValue` throws on, a `boolean` default outside `true`/`false`, which `BooleanFormType.convertValue` reads as false, and an ISO date default on a `date` field naming no pattern, which `DateFormType` parses under `dd/MM/yyyy`.
 A shell task's `wait`, `redirectError`, or `cleanEnv` flag spelled in any case but lowercase, such as `wait="TRUE"`, deploys, and `ShellActivityBehavior.readFields` compares it with `"true"` case-sensitively, so the engine reads it as false.
 A `resultVariable` beside an `external` or a built-in `type` binding on a task deploys and is never written, since `parseServiceTaskLike` hands it to an expression binding alone.
-A script whose `scriptFormat` lies outside the fence tags this surface knows imports under that tag, and a `bpmn:script` or `operaton:script` with an empty body imports empty, since `ScriptUtil.getScript` checks the source for null and not for emptiness.
+A script whose `scriptFormat` lies outside the fence tags this surface knows imports under that tag.
 An execution listener with `expression=""` and a task listener with `class=""`, `expression=""`, or `delegateExpression=""` carry the empty text: `ExpressionExecutionListener` and `ExpressionTaskListener` evaluate it, while `ClassDelegateTaskListener` and `DelegateExpressionTaskListener` fail when the listener's event fires.
 A cancel end and the cancel boundary event that catches it are wired together when Operaton parses the boundary, and nothing but such an end ever reaches such a boundary, so either half alone deploys and then goes wrong at run time.
 A block holding a cancel end with no cancel boundary attached imports whole, and the warning names the error the engine stops with the first time that end is reached.
 A cancel boundary on a block nothing inside gives up imports whole too, and the warning names the path that can never run.
 Refusing either would reject a file the engine deploys although the rebuilt document fails the same way the source does; a boundary event without an id is refused even where it deploys, because the id minted for it would change what runs.
+
+A `bpmn:script` or `operaton:script` with an empty body imports empty and without a warning, since `ScriptUtil.getScript` checks the source for null and not for emptiness, and the printed script draws the validator's empty-body warning when it is built.
 
 ### Print warnings
 
@@ -458,7 +461,7 @@ npm test
 | `src/cfg-analysis.ts`      | `analyzeCfg`: dominator, post-dominator, and back-edge analysis for `irToDsl`                                                                                                    |
 | `src/ir-to-dsl.ts`         | `irToDsl`: restructure flat IR into `{ source, warnings }`, degrading to `goto` ([ADR-0014](../../docs/decisions/0014-restructure-the-ir-into-a-dsl-with-dominator-analysis.md)) |
 | `src/juel.ts`              | `parseJuel`, `renderRawFallback`: the JUEL-subset parser and serializer for the import path                                                                                      |
-| `src/errors.ts`            | `UnsupportedConstructError` and its refusal subclasses                                                                                                                           |
+| `src/errors.ts`            | `UnsupportedConstructError` and its refusal subclasses, and `MalformedDocumentError`                                                                                             |
 | `src/humanize.ts`          | `humanize`: the label the export derives from a task or sub-process id                                                                                                           |
 | `src/host-messages.ts`     | Messages for files that cannot be converted, shared by the CLI and the extension                                                                                                 |
 | `src/bpmn-moddle.d.ts`     | Type declarations for `bpmn-moddle`, `bpmn-auto-layout` and `saxen`, which ship none                                                                                             |
@@ -473,7 +476,7 @@ When `bpmn-auto-layout` throws on a validator-clean shape (a `goto` restructurin
 Operaton deploys it the same, since `BpmnParse.parseDiagramInterchangeElements` reads a diagram only when one is present.
 The CLI and the extension write that document either way and report the layout failure as a warning.
 Version 1.x exposes `layoutProcess(xml)` as a flat named export; the `new BpmnAutoLayout()` constructor belongs to the 0.x series and is not used here.
-The Operaton namespace comes from `src/operaton-moddle.json`, a trimmed fork of the camunda-bpmn-moddle descriptor ([ADR-0008](../../docs/decisions/0008-fork-camunda-moddle-extension.md)).
+The Operaton namespace comes from `src/operaton-moddle.json`, a trimmed fork of the MIT-licensed camunda-bpmn-moddle descriptor ([ADR-0008](../../docs/decisions/0008-fork-camunda-moddle-extension.md)), whose license notice ships beside it in `src/operaton-moddle.LICENSE`.
 
 `irToDsl` recognizes structured patterns through the dominator analysis in `cfg-analysis.ts`, and edges that match nothing become `goto` ([ADR-0014](../../docs/decisions/0014-restructure-the-ir-into-a-dsl-with-dominator-analysis.md)).
 

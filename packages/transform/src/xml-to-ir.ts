@@ -91,6 +91,7 @@ import {
 import {
   FORM_CONSTRAINT_NAME_LINES,
   HANDLER_TRIGGER_NOTE,
+  MalformedDocumentError,
   oneLine,
   PLAIN_NAME_NOTE,
   SERVICE_TASK_FORM_LINES,
@@ -816,13 +817,15 @@ async function importDocument(
 
   // moddle reports "unparsable content" only for undeclared `operaton:`
   // elements.
-  const parsed = await moddle.fromXML(normalizedXml);
+  const parsed = await moddle.fromXML(normalizedXml).catch((err: Error) => {
+    throw new MalformedDocumentError(err.message);
+  });
   const { rootElement, elementsById } = parsed;
   const moddleWarnings = (parsed.warnings ?? []) as ModdleWarning[];
 
   const root = rootElement as ModdleElement;
   if (root.$type !== 'bpmn:Definitions') {
-    throw new Error(
+    throw new MalformedDocumentError(
       `expected the root element 'bpmn:Definitions', got '${root.$type}'`,
     );
   }
@@ -6539,7 +6542,9 @@ function requireFlowEndpoint(
 ): string {
   const endpoint = el.get(property) as ModdleElement | undefined;
   if (endpoint === undefined || endpoint.id === undefined) {
-    throw new Error(`sequence flow '${id}' has no resolvable '${property}'`);
+    throw new MalformedDocumentError(
+      `sequence flow '${id}' has no resolvable '${property}'`,
+    );
   }
   return endpoint.id;
 }
@@ -6565,7 +6570,9 @@ function eventDefinitionsOf(el: ModdleElement): ModdleElement[] {
 
 function requireId(el: ModdleElement): string {
   if (el.id === undefined || el.id === '') {
-    throw new Error(`'${el.$type}' is missing its required 'id' attribute`);
+    throw new MalformedDocumentError(
+      `'${el.$type}' is missing its required 'id' attribute`,
+    );
   }
   return el.id;
 }

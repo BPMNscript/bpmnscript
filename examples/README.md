@@ -50,6 +50,7 @@ Each source under `spring-boot/processes/` covers one construct or combination, 
 The tests in `tests/e2e/` use [testcontainers](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and check what the engine does.
 The suite builds the image and starts one engine, and every test file runs against it.
 `deploy-sweep` deploys every golden under `tests/golden/`, every fixture under `tests/fixtures/`, and every example here, once as written and once rebuilt from the tool's own print of it.
+The engine is expected to refuse the `bad-service-task-no-binding` golden, and that golden and `tests/fixtures/error-start.bpmn`, which the importer refuses, deploy only as written.
 
 The Docker tests run by default, in CI too, and are skipped only when `SKIP_DOCKER_TESTS=true`.
 

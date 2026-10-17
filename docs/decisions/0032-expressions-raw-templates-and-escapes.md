@@ -50,4 +50,4 @@ The importer carries a message or signal name opening with `${` as written, sinc
 ### Confirmation
 
 The `renderExpression` table in `packages/language/test/parsing.test.ts` pins the converter's read, both openers and the nested splice, and `packages/transform/test/juel.test.ts` re-parses every printed raw fallback through the grammar and asserts the body it reads back.
-`packages/transform/test/ir-to-dsl.test.ts` pins the escaped map key, the one-line io value, the `#{` priority and form default, and `packages/transform/test/xml-to-ir.test.ts` pins the expression names that import and the five body positions that report a rewrite.
+`packages/transform/test/ir-to-dsl.test.ts` pins the escaped enum value, the `#{` priority and form default, and `packages/transform/test/xml-to-ir.test.ts` pins the refused expression name on a message start and the rewrite a `#{...}` loop cardinality reports.

@@ -49,7 +49,7 @@ Chosen options: named vendor-neutral fields on the IR node, a gateway's settings
 The IR already carries `assignee`, `formKey`, and the service-task and call-activity bindings under plain names, so the naming extends a precedent rather than amending one.
 
 Each setting becomes an optional field on the IR node that owns it, named for what it means rather than how it serializes, so the retry cycle is `retryCycle`, not `failedJobRetryTimeCycle`.
-Flow-node settings group into one mixin interface and input/output into a second, both as tagged unions so an illegal combination is unrepresentable: `JobSettings` carries the five job settings alone, and `EngineAttributes` is the wider mixin that adds listeners, for everything that keeps a textual identity to attach one to.
+Flow-node settings group into one mixin and input/output into a second, `IoMapped`, and the values inside them are tagged unions, so an illegal combination is unrepresentable: `JobSettings` carries the five job settings alone, and `EngineAttributes` is the wider mixin that adds listeners, for everything that keeps a textual identity to attach one to.
 The naming rule holds at the boundary: values are stored under plain names, and `irToXml` adds the `operaton:` prefix at the one point where it builds the moddle element.
 
 The engine reads the five off a gateway as it does off an activity.
@@ -94,7 +94,7 @@ The `gateway-settings` golden pair under `tests/golden` carries all five plain a
 The validator table in `packages/language/test/validating.test.ts` pins the loop and `await` refusals and the pruned-join warning.
 `packages/transform/test/operaton-moddle.test.ts` pins the typed attribute on the definition and its omission at the default, and `packages/transform/test/ir-to-xml.test.ts` pins the definition and the tag both carrying the lock on a boundary timer and an await, and neither when none is written.
 `packages/transform/test/xml-to-ir.test.ts` pins the gateway carry, the `asyncAfter` refusal, the definition's value on a boundary and an event sub-process start, the tag's as the fallback, the one warning when the two differ, and the warning under which a timer-started event sub-process's own timer job key is dropped.
-`packages/transform/test/ast-to-ir.test.ts` and `packages/transform/test/ir-to-dsl.test.ts` pin the three settings on the synthesized start, the async flags on the sub-process, the lifted head, the authored start keeping its own line, and `droppedSetting`.
+`packages/transform/test/ir-to-dsl.test.ts` pins the lifted head, the sub-process's async flags printed ahead of it, the authored start keeping its own line, the three settings back on the synthesized start after a rebuild, and `droppedSetting`.
 
 ## More Information
 

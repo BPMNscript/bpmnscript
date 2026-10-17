@@ -25,7 +25,7 @@ Which language workbench should be used to implement the DSL infrastructure?
 - Langium: TypeScript throughout, with built-in scoping, cross-reference resolution and validation infrastructure, and a Chevrotain parser with unbounded (ALL(\*)) lookahead.
 - Eclipse Xtext: the most mature workbench (20 years), with EMF integration giving native access to the BPMN 2.0 metamodel and a built-in AST-to-text serializer, but VS Code support needs a hybrid Java/TypeScript stack with a JVM backend, no browser deployment path exists, the learning curve is steep (EMF, Guice, Xtend, Eclipse, MWE2), and its maintenance future has been in question since a 2020 sustainability discussion.
 - MontiCore: has an existing BPMN Workflow DSL grammar, auto-generates pretty printers from grammars, and has strong language composition (inheritance, embedding, aggregation).
-  A language server and IntelliJ and VS Code plugins can be generated from a MontiCore grammar (Charles, Hellwig and Rumpe, Modellierung 2026), but its toolchain is Java, and the BPMN libraries this project builds on are TypeScript.
+  A language server and IntelliJ and VS Code plugins can be generated from a MontiCore grammar (Charles, Hellwig and Rumpe, Modellierung 2026), but its toolchain is Java, and the BPMN libraries this project builds on are JavaScript.
 - ANTLR with a manual LSP server: the most widely used parser generator, with full control and no framework lock-in, and grammar-aware completion via `antlr4-c3`, but every IDE feature would need to be implemented by hand, an estimated 3-5 weeks of the timeline, with no generated VS Code extension scaffolding.
 - JetBrains MPS: backed by JetBrains, with trivial language composition in its projectional editor, but it stores files as XML rather than human-readable text, has no VS Code or LSP integration, and is architecturally incompatible with a textual DSL.
 
@@ -38,7 +38,7 @@ Browser deployment for a future playground was a secondary factor, all within a 
 
 ### Consequences
 
-- Good, because the entire stack is TypeScript, eliminating context-switching between languages
+- Good, because all of this project's code is TypeScript and uses the JavaScript BPMN libraries through type declarations, eliminating context-switching between languages
 - Good, because the grammar yields the AST types and syntax highlighting at build time, and the parser, completion, go-to-definition, and diagnostics at run time
 - Good, because the language server can run in a web worker, enabling a browser-based playground with approximately 95% code reuse
 - Good, because `bpmn-moddle` (the standard JavaScript library for BPMN 2.0 XML) integrates naturally

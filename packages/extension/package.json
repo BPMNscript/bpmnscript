@@ -1,7 +1,7 @@
 {
   "name": "vscode-bpmnscript",
   "description": "VS Code extension for BPMNscript, bundling the Langium language server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "displayName": "BPMNscript",
   "publisher": "bpmnscript",
   "license": "Apache-2.0",
@@ -113,8 +113,8 @@
     "package": "vsce package"
   },
   "dependencies": {
-    "@bpmn-script/language": "0.1.0",
-    "@bpmn-script/transform": "0.1.0",
+    "@bpmn-script/language": "0.1.1",
+    "@bpmn-script/transform": "0.1.1",
     "langium": "^4.4.0",
     "vscode-languageclient": "~10.1.2"
   },

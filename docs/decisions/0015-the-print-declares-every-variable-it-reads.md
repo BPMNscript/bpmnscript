@@ -31,7 +31,7 @@ Where should the declarations a rebuilt script needs come from?
 
 Chosen option: declare on print every variable the body reads bare, typed `any`, because the print already knows every position it writes a variable in, and a third-party document never carries a declaration, so the derivation is needed whatever the XML holds.
 
-The header gets one `var <name>: any` line per name the body reads in a position the script writes bare and nothing types, in first-appearance order over one fixed walk of the model.
+The header gets one `var <name>: any` line per name the body reads in a position the script writes bare and nothing types, sorted by name.
 The positions are the ones the validator reads a variable at: a flow's condition, a loop's count and completion condition, a conditional trigger, an error mapping's condition, an `in` mapping's source, and a bare collection.
 A body prints bare only when it fits the expression subset, so only those bodies contribute names; a raw `"${...}"` body is opaque to the validator and to the print alike.
 The typed set is the validator's symbol table, `DefaultVariableSymbolProvider.collect`.
@@ -51,13 +51,13 @@ A condition the print had to drop still declares its variable, since the model r
   A fixture that needs the type back declares the variable on a form, whose type the XML carries.
 - Bad, because the positions and the typed set are spelled in the language package and mirrored in the transform package.
   A position or a symbol source added on one side has to be added on the other.
-  The mirror is stated in one comment on each side, and the round-trip suites turn red on the first program that drifts.
+  The comment on `variableDecls` states the mirror, and the round-trip suites turn red on the first program that drifts.
 - Neutral, because a variable a dropped condition read is declared and never read in the printed body.
 
 ### Confirmation
 
-The row under "the header declares every variable the body reads bare" in `packages/transform/test/ir-to-dsl.test.ts` prints one process reading a variable at every position and typing one through every source, pinning the whole header and an empty diagnostic list on the re-parse.
-The two-pass table in `tests/round-trip-constructs.test.ts` requires an empty diagnostic list on every printed script, and its last row is a condition variable coming back declared and re-printing byte for byte.
+The collection rows in `packages/transform/test/ir-to-dsl.test.ts` pin a bare collection declared once at any depth and left undeclared where the element variable, a form field or a catch binding types it.
+The two-pass table in `tests/round-trip-constructs.test.ts` requires an empty diagnostic list on every printed script, and its row for a variable a condition reads has the variable come back declared and re-print byte for byte.
 
 ## More Information
 
