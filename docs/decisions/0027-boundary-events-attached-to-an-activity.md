@@ -58,7 +58,7 @@ That is what makes `goto` legal in both directions across a hosted handler's bod
 The restructuring analysis wires every boundary event to its container's virtual entry, unconditionally, the same way it already wires every start event.
 This is the honest model: at runtime a token genuinely appears at a boundary event the moment its trigger fires while its host is running, without ever traversing a sequence flow into it.
 Without this wiring, an escape chain has no immediate dominator at all, and the restructurer can recognize an `if`, a `while`, or a clean join only relative to a dominance relationship, so the chain could never print as anything but unstructured `goto`s.
-The accepted trade-off is that a node reachable from both the main flow and an escape chain loses a tight immediate dominator, since neither the main flow's split nor the escape chain alone reaches it unconditionally, so an `if`/`else` whose join such a chain jumps into degrades to plain `goto`s on decompile.
+The accepted trade-off is that a node reachable from both the main flow and an escape chain loses a tight immediate dominator, since neither the main flow's split nor the escape chain alone reaches it unconditionally.
 The dominance result is correct: a region two independent entry points can both reach is genuinely not dominated by either one's split.
 
 A boundary event's id is `Boundary_<hostId>_<trigger>`, collision-resolved against the same document-wide `taken` set the implicit start and end ids already share.
@@ -78,7 +78,7 @@ The round-trip normalizer compensates on the comparison side instead, keying a b
 - Good, because the self-contained body is uniform across interrupting and non-interrupting boundaries, so there is one rule to learn instead of one rule per cancellation mode.
 - Good, because wiring a boundary event to the virtual entry makes an escape chain's own control flow, including a nested `if`/`else`, restructurable on the same terms as the main flow.
 - Good, because a host-derived id survives every reordering the decompiler's trailing-position rule performs, without adding a re-key rule for the generation direction.
-- Bad, because a node reachable from both the main flow and an escape chain loses a tight immediate dominator, degrading a main-flow `if`/`else` whose join such a chain jumps into into `goto`s on decompile.
+- Bad, because a node reachable from both the main flow and an escape chain loses a tight immediate dominator, so the printer has to structure such a region without one.
 - Bad, because a host-less `on` handler written inside a hosted handler's body lowers into the outer container and therefore guards that whole container rather than just the escape path it is written inside, which follows necessarily from transparency and which an author cannot see from the source alone.
 - Bad, because two boundary handlers sharing a host and a trigger but differing only in code cannot be told apart by id text until one carries a minted rank.
   Two such handlers that both import under an id outside the minted pattern still fall back to model order, exposed to whatever order another tool presents them in on a first import.

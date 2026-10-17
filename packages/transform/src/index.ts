@@ -96,6 +96,7 @@ export {
   UnsupportedErrorMappingError,
   UnsupportedAssignmentError,
   LayoutError,
+  MalformedDocumentError,
   SERVICE_TASK_FORM_ATTRIBUTES,
 } from './errors.js';
 

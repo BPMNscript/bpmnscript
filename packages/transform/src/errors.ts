@@ -36,6 +36,18 @@ export abstract class UnsupportedConstructError extends Error {
 }
 
 /**
+ * Input that cannot be read as a BPMN document at all, such as XML that does
+ * not parse or a flow whose end names nothing: a host reports it as bad input,
+ * while any other exception from `xmlToIr` is a bug.
+ */
+export class MalformedDocumentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MalformedDocumentError';
+  }
+}
+
+/**
  * Keeps a quoted value on its headline or note line, and its whitespace
  * visible: it is often why the value is reported.
  */

@@ -9,6 +9,7 @@ import {
   readableParseError,
   xmlInputProblem,
   UnsupportedConstructError,
+  MalformedDocumentError,
 } from '@bpmn-script/transform';
 import type { ImportWarning, PrintWarning } from '@bpmn-script/transform';
 import {
@@ -58,10 +59,11 @@ export async function parseAction(
     if (err instanceof UnsupportedConstructError) {
       fail(1, `Error: ${fileName}: ${indentNotes(err.message)}`);
     }
+    if (!(err instanceof MalformedDocumentError)) failInternal(err);
     fail(
       2,
       `Error: failed to parse ${fileName}: ` +
-        indentNotes(readableParseError((err as Error).message, xml)),
+        indentNotes(readableParseError(err.message, xml)),
     );
   }
 

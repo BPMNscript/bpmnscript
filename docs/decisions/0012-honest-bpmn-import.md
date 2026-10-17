@@ -13,7 +13,7 @@ Some of those drops change what the imported process executes; others do not.
 What should happen when `xmlToIr` meets content the IR cannot carry, and should every such case be treated the same way?
 
 A surface that answers from its own reading of the IR disagrees with `BpmnParse` in both directions, refusing files the engine deploys while carrying files it refuses, and it says nothing about what the engine does with what it drops.
-Camunda Modeler's default export is the case that costs most: it writes a `bpmn:collaboration` with one participant for any diagram with a pool or a lane, an `isExecutable="false"` process for every empty pool, and `xmlns:camunda` on every file, which is also the shape of the Operaton invoice example and four MIWG reference files.
+Camunda Modeler's default export is the case that costs most: it writes a `bpmn:collaboration` with one participant for any diagram with a pool or a lane, an `isExecutable="false"` process for every empty pool, and `xmlns:camunda` on every file, and the Operaton invoice example and four MIWG reference files carry the same one-participant collaboration.
 Document shapes the engine rejects before `BpmnParse` sees an element pass through instead, since moddle-xml and saxen read them where a validating parse does not.
 `bpmn:documentation` has no place at all, which keeps the letter of the contract while working against everything the contract exists for.
 
@@ -51,7 +51,7 @@ A shape the engine deploys and this surface cannot spell either drops with a war
 `packages/transform/README.md` lists the refused ones, among them a `bpmn:complexGateway`, a compensation boundary event, two input parameters sharing a name, a script body no fence can enclose, and a thrown message's result variable beside an `expression` binding, where the engine stores a value the throw has no slot for.
 
 A refusal throws a subclass of `UnsupportedConstructError` before any IR is produced, so there is never a partial IR, and a consumer classifies the whole family with a single `instanceof` check while each subclass still carries construct-specific metadata for a tailored message.
-A warning is returned in a `warnings: ImportWarning[]` array alongside the IR, so `xmlToIr` returns `{ ir, warnings }` rather than a bare `BpmnProcess`, which makes the channel unignorable at the type level: every call site must destructure or explicitly discard `warnings`, where an optional collector parameter (`xmlToIr(xml, sink?)`) or a second `xmlToIrWithWarnings` function leaves it easy to skip.
+A warning is returned in a `warnings: ImportWarning[]` array alongside the IR, so `xmlToIr` returns `{ ir, warnings }` rather than a bare `BpmnProcess`, which hands every caller the warnings in the same value as the IR rather than through an optional collector parameter (`xmlToIr(xml, sink?)`) or a second `xmlToIrWithWarnings` function a caller has to know to use.
 What the engine deploys and then fails on at run time is carried as written, with a warning that the printed script draws an error there.
 The exception is an event without an id that the engine deploys and cannot run, which is an error, escalation, cancel or conditional boundary event.
 The IR names every node, so such an event cannot be carried as written, and an id minted for it would make the handler run where the source fails, so the import refuses it ([ADR-0010](0010-deterministic-synthesized-ids.md)).
@@ -106,7 +106,7 @@ Every one of them is warned rather than refused, because a refusal has no meanin
 ### Confirmation
 
 The refusal and warning tables in `packages/transform/test/xml-to-ir.test.ts` pin every documented row with the whole warning list or the refusal class and detail, including the document level, the `camunda:` file and the setting spelled under both prefixes, the resource-role merge, and the quantity warning.
-`tests/review-loop.round-trip.test.ts` and the invoice fixture in `tests/` pin the Modeler-shaped documents end to end, and `tests/e2e/forms-and-external-tasks.test.ts` deploys the re-export of a task assigned in BPMN's own words to a real engine and reads the identity links back.
+`tests/invoice-receipt.import.test.ts` pins the Modeler-shaped Operaton invoice example end to end and `tests/review-loop.round-trip.test.ts` its approve and review loop, and `tests/e2e/forms-and-external-tasks.test.ts` deploys the re-export of a task assigned in BPMN's own words to a real engine and reads the identity links back.
 The frozen `documentation` golden pair and a parameterized sweep per hop name every position that carries documentation and every position that reports it instead, so a position wired to neither branch fails the sweep rather than passing in silence.
 `tests/value-documentation.round-trip.test.ts` takes every value position through one table, from script to XML and back and from that XML to a rebuild with no model difference.
 

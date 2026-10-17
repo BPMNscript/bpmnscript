@@ -3707,18 +3707,11 @@ export class BpmnScriptValidator {
     listener: Listener,
     accept: ValidationAcceptor,
   ): void {
-    if (listener.script !== undefined) {
-      checkFencedScript(
-        listener.script,
-        `the 'on ${listener.event}' listener`,
-        { node: listener, property: 'script' },
-        accept,
-      );
-      return;
-    }
-
+    const settings = settingsOf(listener.items);
+    const subject = `the 'on ${listener.event}' listener`;
+    const target = { node: listener, property: 'event' } as const;
     this.checkAttributeKeys(
-      settingsOf(listener.items).filter(
+      settings.filter(
         (setting) =>
           listener.event !== 'timeout' ||
           setting.key !== VALUE_DOCUMENTATION_KEYS.timer,
@@ -3728,14 +3721,39 @@ export class BpmnScriptValidator {
       accept,
     );
     this.checkFlags(listener.items, [], 'a listener', accept);
-    this.checkExactlyOneBinding(
-      settingsOf(listener.items),
-      LISTENER_BINDING_KEYS,
-      `the 'on ${listener.event}' listener`,
-      { node: listener, property: 'event' },
+    if (listener.script === undefined) {
+      this.checkExactlyOneBinding(
+        settings,
+        LISTENER_BINDING_KEYS,
+        subject,
+        target,
+        accept,
+        ', nor a fenced script body',
+      );
+      return;
+    }
+
+    checkFencedScript(
+      listener.script,
+      subject,
+      { node: listener, property: 'script' },
       accept,
-      ', nor a fenced script body',
     );
+    // The script is the binding, so a setting beside it would be dropped.
+    const written = bindingKeysOf(settings, LISTENER_BINDING_KEYS);
+    if (written.length > 0) {
+      accept(
+        'error',
+        diagnosticText(
+          `${subject} declares more than one binding: ${formatPlainWordList(
+            [...written.map((key) => `'${key}'`), 'a fenced script body'],
+            'and',
+          )}`,
+          `note: exactly one of ${formatWordList(LISTENER_BINDING_KEYS)}, or a fenced script body, is allowed`,
+        ),
+        target,
+      );
+    }
   }
 
   /**

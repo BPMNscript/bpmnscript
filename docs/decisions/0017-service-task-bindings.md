@@ -52,7 +52,7 @@ The tables behind all of them live once in `packages/language/src/vocabulary.ts`
 
 Three extras ride the `topic` binding and no other, because `parseExternalServiceTask` alone reads them.
 `taskPriority` is a settings key, while a property and an error mapping are member lines of the block the step already opens.
-`error <Code> when <condition>` is parsed as `ID ID ID Expr`, told apart from a parameter's `ID ID '='` at the third token, so neither `error` nor `when` is reserved.
+`error <Code> when <condition>` is parsed as `ID Name ID Expr`, told apart from a parameter's `ID Name '='` at the third token, so neither `error` nor `when` is reserved.
 The code slot is a cross-reference in the scope a `throw error(X)` resolves in, so an undeclared code draws the linker's message, jump-to-definition works, and a `bpmn:error` root is derived for the use as for a throw.
 The condition is evaluated on the task's execution by `ExternalTaskEntity.evaluateThrowBpmnError`, where `VariableScopeElResolver` resolves `externalTask` to the task entity beside every process variable.
 In the IR the three sit on the external variant of `ServiceTaskBinding`, so the type cannot carry them under a class, expression, delegate, decision, or built-in binding and every direction's guard stays a type check.

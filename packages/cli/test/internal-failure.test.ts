@@ -1,16 +1,22 @@
 // Its own file because `vi.mock` applies to the whole file.
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('@bpmn-script/transform', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@bpmn-script/transform')>()),
-  irToXml: vi.fn(() => {
-    throw new Error('boom in irToXml');
-  }),
-  irToDsl: vi.fn(() => {
-    throw new Error('boom in irToDsl');
-  }),
-}));
+vi.mock('@bpmn-script/transform', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@bpmn-script/transform')>();
+  return {
+    ...actual,
+    xmlToIr: vi.fn(actual.xmlToIr),
+    irToXml: vi.fn(() => {
+      throw new Error('boom in irToXml');
+    }),
+    irToDsl: vi.fn(() => {
+      throw new Error('boom in irToDsl');
+    }),
+  };
+});
 
+import { xmlToIr } from '@bpmn-script/transform';
 import { runBuild, runParse } from './helpers/actions.js';
 
 const BPMN = `<?xml version="1.0" encoding="UTF-8"?>
@@ -33,6 +39,14 @@ describe('an exception inside a transform', () => {
       'parse exits 3 and writes nothing',
       () => runParse({ text: BPMN }),
       'boom in irToDsl',
+    ],
+    [
+      'parse exits 3 on an exception inside the importer',
+      () => {
+        vi.mocked(xmlToIr).mockRejectedValueOnce(new Error('boom in xmlToIr'));
+        return runParse({ text: BPMN });
+      },
+      'boom in xmlToIr',
     ],
   ])('%s', async (_title, go, boom) => {
     const run = await go();

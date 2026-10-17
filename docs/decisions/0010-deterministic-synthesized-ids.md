@@ -73,7 +73,7 @@ If a base id is already in the taken set, the resolution appends `_2`, `_3`, and
 Gateway ids skip the `taken`/`resolveCollision` guard, because the position-path scheme never generates the same id twice.
 What collides with them is an author-chosen statement name matching a synthesized-id pattern.
 The `checkReservedNames` validator in `packages/language/src/bpmn-script-validator.ts` rejects such a name at validation time.
-It reserves by prefix `Gateway_*_(split|join|fork|loop|race)`, `Throw_*`, `EventSubProcess_*`, `Boundary_*`, `Catch_*`, the two-segment `Flow_*_*` form (`/^Flow_.+_.+$/`), and the `*_di` suffix diagram-interchange ids carry.
+It reserves by prefix `Gateway_*_(split|join|fork|loop|race)`, `Throw_*`, `EventSubProcess_*`, `Boundary_*`, `Catch_*`, `BPMNDiagram_*` and `BPMNPlane_*`, the two-segment `Flow_*_*` form (`/^Flow_.+_.+$/`), and the `*_di` suffix diagram-interchange ids carry.
 Single-segment names such as `Flow_Control` stay legal, because synthesized flow ids occupy only `SequenceFlow.id` and never node names, so they cannot collide.
 For a start and an end it reserves, for each statement, the exact `StartEvent_<c>` and `EndEvent_<c>` of the container `c` whose body holds it: the process, or the nearest `subprocess` or `attempt` block.
 The message says the compiler generates that id for the container's implicit start or end.
@@ -106,7 +106,7 @@ A code is referenced inside a trigger's parens, which the grammar parses as an e
 An element the document gives no id gets one on import, before anything keys it.
 A sequence flow gets `Flow_<source>_<target>`, and any other element `<Type>_<container>`, from the local name of its BPMN type and the id of the process or sub-process holding it, such as `UserTask_invoice`; both resolve against every id in the document the way the compiler's ids do.
 An end event also skips `EndEvent_<id>` for every id in the document and so usually imports as `EndEvent_<container>_2`, since the printer would take such an id for the implicit end the compiler gives a container or a boundary escape and leave the event out.
-Operaton deploys such a flow as an unnamed transition and such a task, end or catch as an activity nothing can flow into, since a `sourceRef` or `targetRef` needs an id, so the step prints and the validator reports that it can never run.
+Operaton deploys such a flow as an unnamed transition and such a task, end or catch as an activity nothing can flow into, since a `sourceRef` or `targetRef` needs an id, so the printer leaves the step out of the script with a warning that no route reaches it.
 A start event, a timer event, an event-based gateway, and a message or signal boundary event without an id refuse the import instead, since Operaton fails the deployment on each.
 An error, escalation, cancel or conditional boundary event without an id refuses too: Operaton deploys it and fails the run when an error is thrown inside its step, an escalation reaches it, its transaction is cancelled, or its step runs.
 A minted id would make the rebuilt document deploy and run where the source does not.
@@ -133,7 +133,7 @@ The engine sets the variable under that exact name (`FormFieldHandler.handleSubm
 
 `packages/transform/test/synthesize-ids.test.ts` verifies every template, the collision-resolution rule, and the exact predicates for a minted start and end.
 The reserved-name table in `packages/language/test/validating.test.ts` pins the exact rule per container and the freed `StartEvent_1`.
-The backtick table in `packages/transform/test/ir-to-dsl.test.ts` prints every id site in backticks with no warning, re-parses and validates the source, and compiles it back to the same ids; the Modeler-default row asserts the printed start, end and initiator with no warning.
+The backtick test in `packages/transform/test/ir-to-dsl.test.ts` prints every id site in backticks with no warning, re-parses and validates the source, and compiles it back to the same ids, and the synthesized-terminal test in the same file prints a Modeler default's start, end and initiator with no warning.
 `tests/backtick-names.round-trip.test.ts` imports a document per id the plain form cannot spell, asserts the exact printed script, and compiles it to a document with the same ids and no model difference.
 The refusal matrix in `packages/transform/test/xml-to-ir.test.ts` pins the two import refusals.
 The two id-less tables in the same file pin the minted ids and the id-less events that refuse.

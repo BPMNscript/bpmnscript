@@ -65,7 +65,7 @@ Such a document says something no conforming reading can give it, so the import 
 A standard loop is valid BPMN that the engine does not implement, and refusing it would reject a conforming document that deploys, against the import contract of ADR-0012.
 
 Neither clause needs a new reserved word.
-`name=ID` is mandatory and comes first in both the `StartEvent` and `EndEvent` rules (`packages/language/src/bpmn-script.langium`), so the second token decides everything: an `ID` is the trigger, a `(` the settings, and a `{` the members.
+`name=Name` (an identifier or a backtick-quoted name) is mandatory and comes first in both the `StartEvent` and `EndEvent` rules (`packages/language/src/bpmn-script.langium`), so the next token decides everything: an `ID` is the trigger, a `(` the settings, and a `{` the members.
 Nothing else can appear there, because every statement in this grammar is keyword-led, and both rules were built into a live Langium parser with Chevrotain's self-analysis on, which reported no ambiguity.
 `terminate` and the four start words therefore stay soft identifiers, and `var terminate: string` parses beside `end Done terminate`.
 
@@ -97,7 +97,7 @@ No source spells that shape, since `goto` names an authored statement and never 
 - Neutral, because `initiator` is read off every start and set on the process definition by `BpmnParse.parseProcessDefinitionStartEvent`, last one wins, and the validator warns on every start but the last that names one.
 - Neutral, because a message start whose name is already subscribed by another deployed definition fails in `BpmnDeployer.addMessageStartEventSubscription`, a fact about the deployment rather than the file, and out of this tool's reach.
 - Bad, because a terminate end always prints, even when its id was synthesized (`isElidedOnPrint`, `packages/transform/src/ir-to-dsl.ts`).
-  A modeler document decompiles to `end EndEvent_1 terminate`, and re-parsing reports the reserved prefix.
+  A terminate end carrying the minted id decompiles to `end EndEvent_<process> terminate`, and re-parsing reports that name as the id generated for the implicit end event.
 - Bad, because a branch that terminates does not rejoin.
   An `if` whose branch ends at a terminate prints as a `goto`, and a `parallel` whose branch terminates leaves its join with one incoming flow (`joinContinuation`).
 - Bad, because the printed form of a process with several starts is not always the authored one: starts entering the same step print back to back above it, even one written after an `end` with a `goto` onto that step.
@@ -108,8 +108,8 @@ No source spells that shape, since `goto` names an authored statement and never 
 
 `packages/language/test/parsing.test.ts` and `validating.test.ts` pin the two clauses token by token and every diagnostic behind them, and the validator rows pin every position a start may take, the chain error, and both warnings.
 `packages/transform/test/xml-to-ir.test.ts` pins each refusal by error class and message, `ast-to-ir.test.ts` and `ir-to-dsl.test.ts` the lowering and the printed line for every authored shape, and `packages/cli/test/decompile-contract.e2e.test.ts` that a refused trigger exits nonzero and writes no output file.
-The frozen pair `tests/golden/event-positions.{bpmnscript,bpmn}` holds a message start, an `emit message`, a `throw message`, and a terminate end, and `tests/event-positions.round-trip.test.ts` compares the compiled XML byte for byte and requires an import with no warning at all; the frozen pair `tests/golden/event-triggers.{bpmnscript,bpmn}` carries the timer, signal, and conditional starts, and the frozen pair `tests/golden/multiple-starts.{bpmnscript,bpmn}` holds four starts across two chains, its suite asserting at every hop that all four keep their trigger and none is the target of a sequence flow.
-`tests/e2e/event-positions.test.ts` deploys to a real Operaton through Testcontainers: a correlated message with no instance to aim at creates one, a broadcast signal creates one with both branches active, a timer parks a job, the terminate cancels a sibling branch parked on a user task, and both thrown messages pass the token through to completion, which is what shows an implementation-free message throw deploys and runs.
+The frozen pair `tests/golden/event-positions.{bpmnscript,bpmn}` holds a message start, an `emit message`, a `throw message`, and a terminate end, and `tests/event-positions.round-trip.test.ts` compares the compiled XML byte for byte and requires an import with no warning at all; the frozen pair `tests/golden/multiple-starts.{bpmnscript,bpmn}` holds four starts across two chains, a signal start beside two message starts and a plain one, its suite asserting at every hop that all four keep their trigger and none is the target of a sequence flow.
+`tests/e2e/event-positions.test.ts` deploys to a real Operaton through Testcontainers: a correlated message with no instance to aim at creates one, a broadcast signal creates one with both branches active, a timer parks a job, the terminate cancels a sibling branch parked on a user task, and both thrown messages, each bound to a delegate, pass the token through to completion.
 The same suite starts `support-ticket`, a process with a plain and a message start, once by key and once by message, and each instance's history holds exactly its own start and the shared task, which is the assertion a pass-through start would fail.
 
 ## More Information

@@ -81,6 +81,9 @@ The block is inclusive when any route carries a condition or the step names a `d
 The one shape a choice routes the same way, exactly one weighed route beside the `default`, keeps the `if`/`else` the choice prints, which reads better and lowers to the same routing.
 The fork printer is keyed on a split's id and kind rather than on a gateway, so a step's block takes the merge's `join` settings and no head settings of its own.
 
+A fork with no merge gateway of its kind still prints as a `parallel` block when its routes share no step and each ends or jumps to a step already printed, or when its routes meet at a step that only they enter, the fork's immediate post-dominator (`routesEndApart`, `unsyncedMeet`).
+Each branch then ends in a `goto` to that step, which prints after the block, and the compiler leaves out the join no route reaches, so the step runs once per route, as in the model.
+
 A fork or race the catalog cannot fold prints one marker line naming the split and its kind, `split G degraded to jumps; was inclusive`, and then an `if` chain of jumps with each route's condition on its own jump and the split's fallback as the `else`, each jump taking a branch of that chain since a jump ends its block and a second one beside it could never run.
 The report says the conditions are on the jumps and that the split's kind, whether it opened one branch, every branch whose condition held, or the first to resolve, is written nowhere.
 An exclusive split with no clean join prints its jumps with no marker: an `if` chain of jumps is a choice, and an exclusive split takes the first route whose condition holds (`ExclusiveGatewayActivityBehavior.doLeave`), so nothing of it is lost.
@@ -119,7 +122,7 @@ Either way the fix it names is a rename in the diagram.
 - Good, because the restructurer reports what it drops instead of leaving the caller to find it, including where the drop changes what a recompiled document runs, such as a degraded split whose kind is written nowhere.
 - Good, because a synthesized plain end that is not its block's tail is refused loudly instead of rewiring its chain into whatever the printer appended next: the reader finds a reserved id on the page, a print warning, and a validator error naming the element to rename.
 - Neutral, because a route running straight into an enclosing construct's stop node prints as an empty branch, which the validator warns about; the condition on it survives, where a jump would have lost the branch.
-- Neutral, because a step whose routes reconverge at a merge of another kind degrades to jumps under the marker: the block form synchronizes at a merge of its own kind, which the model does not have there.
+- Neutral, because a step whose routes reconverge at a merge gateway of another kind degrades to jumps under the marker: the block form synchronizes at a merge of its own kind, which the model does not have there.
 - Neutral, because a jump into an elided end is still dropped and marked.
   `forwardToRealTarget` reads the model-level answer, and at the top level the jump is printed before the end's position is known; for a plain end in the same container the re-derived tail end is the same terminal, so the process runs the same and the marker is the only cost.
 - Neutral, because RPST would recover more structured patterns, for example nested switch-like gotos, but is left for later, once the scope justifies the added machinery.
@@ -128,8 +131,8 @@ Either way the fix it names is a rename in the diagram.
 - Bad, because "tail" for a synthesized end is decidable only after the block's passes, so the emitter carries a deferred list and a resolve step that a reader has to find.
 - Bad, because the decompiler always produces parseable source but not always source that validates, and not every edge survives.
 - Bad, because a modeller's document with a default-named plain end that is not last, or that carries a label, prints a reserved id and is refused until renamed, and the import-side documentation warning can only name the two outcomes rather than the one that will happen.
-- Bad, because a step whose routes merge at a merge of another kind prints jumps under a marker where an `if` chain would read better, that chain being a choice the model is not.
-- Bad, because a branch that ends inside a loop body, a `do { end } while`, a loop gateway the compiler leaves without an incoming flow, and a post-test loop whose body ends inside a branch still print as jumps or markers, the last of them a jump the validator refuses; these are reported and pinned as they are.
+- Bad, because a step whose routes meet at a merge gateway of another kind prints jumps under a marker where an `if` chain would read better, that chain being a choice the model is not.
+- Bad, because a loop gateway without an incoming flow, the shape `do { end } while` would lower to and the validator refuses in source, has no structured print: in an imported document its unreachable loop test and what only it reaches are left out with a warning, pinned as they are in `tests/goto-fallback.round-trip.test.ts`.
 
 ### Confirmation
 

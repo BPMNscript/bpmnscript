@@ -29,7 +29,7 @@ Which of the engine's parse-time rules should the validator repeat, and how shou
 
 - A document the validator passes should deploy, and a refusal should reach the author on the line that caused it rather than as an engine message naming a generated id.
 - A setting that configures nothing is a mistake the author cannot see on the page, since the document deploys and runs.
-- Every mirrored rule cites the engine method it repeats, so a reader can check it against the engine's source when the engine moves.
+- Every mirrored rule states in its message what the engine does, and this record names the method behind it, so a reader can check the rule against the engine's source when the engine moves.
 
 ## Considered Options
 
@@ -60,9 +60,9 @@ A timer carrier is exempt for all three, since the timer job reads them off the 
 
 ### Consequences
 
-- Good, because a script that compiles also deploys where these rules are concerned, and the message names the scope and the engine method.
+- Good, because a script that compiles also deploys where these rules are concerned, and the message says where the rule applies and that the engine refuses the shape, naming an engine method in a note only where that explains the cause.
 - Good, because a setting that configures nothing is reported at the key that carries it.
-- Bad, because the validator restates engine rules that can move under a new engine version; each rule cites the method it mirrors so the drift can be checked.
+- Bad, because the validator restates engine rules that can move under a new engine version; this record names the method behind each rule so the drift can be checked.
 - Neutral, because a script with a nested start form, an unpaired job setting, or a `resultVariable` beside `topic` draws a diagnostic although it deploys.
 
 ### Confirmation

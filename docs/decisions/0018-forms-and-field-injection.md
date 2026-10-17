@@ -61,7 +61,7 @@ A member block, where `params+=IoParameter*` already repeats freely, is the only
 Operaton hands a field list to a class-bound and a delegate-expression-bound listener of either kind exactly as it does to a service task, so `on <event>(...) { }` takes the same rule the task's own block uses.
 A field is none of the three things a listener's block still refuses to nest: it is not a form, not an input or output parameter, and not a nested listener (ADR-0020).
 
-A field's value has one DSL spelling regardless of which of Operaton's two XML slots it lowers to: a quoted string lowers to the `stringValue` attribute and a `"${...}"` raw expression to an `<operaton:expression>` child, the same literal-versus-expression split `renderIoValue` already draws for an io parameter's value.
+A field's value has one DSL spelling regardless of which of Operaton's two XML slots it lowers to: a quoted string lowers to the `stringValue` attribute and a `"${...}"` raw expression to an `<operaton:expression>` child.
 The moddle already normalizes an `expression` attribute into a child element on its own, so a normalizing round trip is not new here.
 The one shape this rule cannot close is a `stringValue` that reads `${...}`: writing it back would turn a literal Operaton injects verbatim into an expression Operaton evaluates instead, so that shape keeps a drop warning naming the reason rather than being carried.
 

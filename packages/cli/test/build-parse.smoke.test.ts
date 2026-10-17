@@ -603,6 +603,18 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
         "'http://www.omg.org/spec/BPMN/20100524/MODEL'",
     ),
     refusedFile(
+      'parse: a sequence flow whose target names no element exits 2 as unreadable input',
+      'parse',
+      'dangling-flow.bpmn',
+      '<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="d">' +
+        '<bpmn:process id="p" isExecutable="true"><bpmn:startEvent id="S"/>' +
+        '<bpmn:sequenceFlow id="f" sourceRef="S" targetRef="Nowhere"/>' +
+        '</bpmn:process></bpmn:definitions>',
+      2,
+      (inputPath) =>
+        `Error: failed to parse ${inputPath}: sequence flow 'f' has no resolvable 'targetRef'`,
+    ),
+    refusedFile(
       'parse: a wrong bpmn namespace names the namespace it found',
       'parse',
       'wrong-ns.bpmn',

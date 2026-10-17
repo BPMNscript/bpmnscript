@@ -12,8 +12,10 @@ What is specific to this project is the conversion layer: three commands (`bpmns
 ```bash
 npm run build
 npm run package -w packages/extension
-code --install-extension packages/extension/vscode-bpmnscript-0.1.0.vsix
+code --install-extension packages/extension/vscode-bpmnscript-0.1.1.vsix
 ```
+
+To install a downloaded release instead, run `code --install-extension vscode-bpmnscript-0.1.1.vsix` in the folder holding it, or pick the file under Extensions: Install from VSIX... in the command palette.
 
 VS Code then shows the BPMNscript icon in the activity bar and offers `BPMNscript: Compile to BPMN` in the command palette when a `.bpmnscript` file is open.
 

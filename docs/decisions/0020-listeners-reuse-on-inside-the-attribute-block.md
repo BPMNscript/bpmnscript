@@ -51,6 +51,8 @@ The event word is a soft word, like a trigger word: every task listener event le
 `start` and `end` lex as statement keywords instead, so the grammar names those two as the listener event position's exceptions.
 An `on` clause becomes an execution listener or a task listener by its event word alone, since the two event sets never overlap, so the surface never has to spell the distinction the XML draws between `operaton:executionListener` and `operaton:taskListener`.
 
+A fenced script counts as a listener's binding, so a listener that also sets `class`, `expression`, or `delegate` is refused.
+
 Every `timeout` task listener is written with the id `<task id>_timeout_<n>`, `n` counting the task's timeout listeners from one in document order.
 An id the document already holds is stepped past, the way a synthesized element's id is (ADR-0010).
 
@@ -78,8 +80,8 @@ The timer job's own settings, `jobPriority`, `retryCycle` and `exclusive`, go on
 ### Confirmation
 
 `packages/language/test/validating.test.ts` pins `on assignment` accepted and `on assign` refused with the list, and a parameter on either handler form refused with the parameter-host message.
-`packages/transform/test/ir-to-xml.test.ts` pins two timeout listeners on one task written as `_timeout_1` and `_timeout_2`, and the second stepping past a task already holding its id.
-`packages/transform/test/xml-to-ir.test.ts` pins `event="assignment"` imported, `event="assign"` refused, and a listener id consumed without a warning.
+`packages/transform/test/ir-to-xml.test.ts` pins a timeout listener written as `<task id>_timeout_1`.
+`packages/transform/test/xml-to-ir.test.ts` pins `event="assignment"` imported and an event a listener's position does not accept refused, and the listeners golden pins a listener id consumed without a warning.
 The frozen pairs `tests/golden/listeners.{bpmnscript,bpmn}` and `tests/golden/input-output.{bpmnscript,bpmn}` carry the three shapes and import without a warning.
 
 ## More Information

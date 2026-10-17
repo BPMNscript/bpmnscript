@@ -57,7 +57,7 @@ Each pair has a round-trip test at `tests/<name>.round-trip.test.ts`, and `tests
 Every pair but `intermediate-catch` also asserts that the frozen `.bpmn` imports without a single warning and re-desugars back to the IR the fixture compiled to.
 Nested shapes stay inside their parent only through the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane.
 Per-fixture extras, such as which root elements must be shared or how strictly the restructured DSL is validated, live in the test file.
-`tests/e2e/deploy-sweep.test.ts` deploys every frozen `.bpmn` here, every fixture under `tests/fixtures/`, and every example, on the engine, both as written and rebuilt from its own print; that suite lives outside the pair suites and runs once per file rather than once per pair.
+`tests/e2e/deploy-sweep.test.ts` deploys every frozen `.bpmn` here, every fixture under `tests/fixtures/`, and every example, on the engine, both as written and rebuilt from its own print, except that the engine is expected to refuse `bad-service-task-no-binding` and the two files the importer refuses deploy only as written; that suite lives outside the pair suites and runs once per file rather than once per pair.
 
 Run the pair tests with `npm test --workspace tests`, or one pair with `npm test --workspace tests -- forms.round-trip.test.ts`.
 
@@ -67,7 +67,7 @@ Three rules keep a pair comparable across the round trip.
 
 - Unless a pair says otherwise, a variable read by a condition or an expression is declared as a form field rather than a `var`, so the declaration comes back out of the XML on import; the IR carries no `var` line.
 - Every `throw`, `emit` and link catch is named, so its printed id re-parses unchanged; an unnamed one re-derives a coordinate id that moves when the restructured DSL reorders statements.
-- No label equals the name humanized from its id, because the importer drops a label it can derive and the fixture would come back with it missing.
+- No process or activity label equals the name humanized from its id, because the importer drops a label it can derive there and the fixture would come back with it missing.
 
 ## `invoice-approval-handwritten.bpmn`
 
@@ -80,7 +80,7 @@ This is the input for the XML to IR direction.
 ## `invoice-approval-generated.bpmn`
 
 The frozen output of the full pipeline, checked in: `irToXml(astToIr(parse(examples/spring-boot/processes/invoice-approval.bpmnscript)))`.
-The `irToXml` test (`packages/transform/test/ir-to-xml.test.ts`, describe block "irToXml: full-pipeline golden diff") reproduces that pipeline and compares byte-for-byte, so any accidental change to the parser, the desugarer, or the serializer shows up as a failed diff.
+The `irToXml` test (`packages/transform/test/ir-to-xml.test.ts`, "serializes the invoice example byte-for-byte as the generated golden" under "irToXml: document") reproduces that pipeline and compares byte-for-byte, so any accidental change to the parser, the desugarer, or the serializer shows up as a failed diff.
 `tests/e2e/deploy-sweep.test.ts` deploys this frozen file as written, while `tests/e2e/invoice-approval.test.ts` deploys the same source compiled fresh through the CLI; the two documents differ in `exporterVersion` alone (see "Regenerating a frozen output" above).
 
 Contract: the process id `invoice-approval`, the userTask ids `ReviewInvoice` and `SeniorApproval`, `operaton:class="com.example.invoice.AutoApproveDelegate"`, the `demo` and `manager` assignees, and the condition `${amount > 1000}`.

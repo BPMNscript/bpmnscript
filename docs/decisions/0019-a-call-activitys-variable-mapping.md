@@ -71,7 +71,7 @@ Nothing on the authoring or the import hop can check that the named class implem
 ### Confirmation
 
 The mapper block in `tests/call-activity.round-trip.test.ts` authors each spelling beside an `in` and an `out` mapping on the same call and asserts the whole IR node, the serialized Operaton attribute, an empty warning list, an identical re-import, the printed setting in its canonical position, and that the printed source revalidates.
-The import table in `packages/transform/test/xml-to-ir.test.ts` pins both attributes under both namespace prefixes and the both-set case, asserting the whole mapper object and the whole warning list rather than membership in either.
+The import table in `packages/transform/test/xml-to-ir.test.ts` pins a delegate mapper alone and the both-set case, asserting the whole mapper object and the whole warning list rather than membership in either.
 
 ## More Information
 
