@@ -42,6 +42,7 @@ Thumbs.db
 # VS Code extension packaging
 *.vsix
 packages/extension/LICENSE
+packages/extension/language-configuration.json
 
 # Environment
 .env
@@ -68,3 +69,4 @@ packages/cli/LICENSE
 packages/language/LICENSE
 packages/transform/LICENSE
 packages/conversion/LICENSE
+packages/web/LICENSE
