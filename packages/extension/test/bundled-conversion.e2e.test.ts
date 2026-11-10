@@ -1,6 +1,5 @@
-// Needs `npm run build` first. Checks that the transform still finds its
-// moddle asset once esbuild flattens it into the single CommonJS file the
-// extension ships as.
+// Checks that the transform works once esbuild flattens it into a single
+// CommonJS file with nothing beside it: the moddle JSON must be inlined.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
@@ -11,45 +10,23 @@ import { spawnSync } from 'node:child_process';
 import * as esbuild from 'esbuild';
 
 // @ts-ignore esbuild.mjs is a plain JS module with no type declarations.
-import { sharedBuildOptions, assetCopyPlugin } from '../esbuild.mjs';
+import { sharedBuildOptions } from '../esbuild.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
-const EXT_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 const GOLDEN_GENERATED_BPMN = path.resolve(
   REPO_ROOT,
   'tests/golden/invoice-approval-generated.bpmn',
 );
 
-describe('bundled asset resolution and transform under the shim', () => {
+describe('bundled transform with no asset beside the bundle', () => {
   // Unique per run so parallel suites do not collide.
   const runId = `${process.pid}-${Date.now()}`;
   const verifyEntryFile = path.join(os.tmpdir(), `verify-entry-${runId}.js`);
-  // Under out/extension/ so assetCopyPlugin lands operaton-moddle.json where
-  // the import.meta.url shim resolves.
-  const verifyOutfile = path.resolve(
-    EXT_DIR,
-    'out',
-    'extension',
-    `verify-${runId}.cjs`,
-  );
+  const verifyDir = path.join(os.tmpdir(), `verify-bundle-${runId}`);
+  const verifyOutfile = path.join(verifyDir, 'verify.cjs');
 
   beforeAll(async () => {
-    // The only check on assetCopyPlugin's outdir branch: the build below takes
-    // the outfile branch, and the extension itself ships through outdir.
-    const moddlePath = path.resolve(
-      EXT_DIR,
-      'out',
-      'extension',
-      'operaton-moddle.json',
-    );
-    if (!fs.existsSync(moddlePath)) {
-      throw new Error(
-        `operaton-moddle.json missing at ${moddlePath}. ` +
-          'Run `npm run build` from the repo root before this suite.',
-      );
-    }
-
     // The async IIFE keeps top-level await out of the CJS output.
     const entrySource = [
       "import { xmlToIr, irToXml } from '@bpmn-script/transform';",
@@ -72,23 +49,24 @@ describe('bundled asset resolution and transform under the shim', () => {
       entryPoints: [verifyEntryFile],
       outfile: verifyOutfile,
       nodePaths: [path.resolve(REPO_ROOT, 'node_modules')],
-      plugins: [assetCopyPlugin],
     });
   }, 60_000);
 
   afterAll(() => {
     if (fs.existsSync(verifyEntryFile)) fs.unlinkSync(verifyEntryFile);
-    if (fs.existsSync(verifyOutfile)) fs.unlinkSync(verifyOutfile);
+    fs.rmSync(verifyDir, { recursive: true, force: true });
   });
 
   it(
-    'the bundle resolves its moddle asset under plain Node and produces the expected process id and BPMN XML',
+    'the bundle runs under plain Node and produces the expected process id and BPMN XML',
     { timeout: 35_000 },
     () => {
       expect(
         fs.existsSync(verifyOutfile),
         `verify bundle missing at ${verifyOutfile}: esbuild step failed`,
       ).toBe(true);
+
+      expect(fs.readdirSync(verifyDir)).not.toContain('operaton-moddle.json');
 
       const result = spawnSync(
         process.execPath,

@@ -35,8 +35,7 @@
   "scripts": {
     "prepack": "node -e \"fs.cpSync('../../LICENSE', 'LICENSE')\"",
     "clean": "node -e \"for (const f of [...fs.globSync('*.tsbuildinfo'), 'out']) fs.rmSync(f, { recursive: true, force: true })\"",
-    "build": "tsc -p tsconfig.json && node -e \"fs.cpSync('src/operaton-moddle.json', 'out/operaton-moddle.json')\"",
-    "build:post": "node -e \"fs.cpSync('src/operaton-moddle.json', 'out/operaton-moddle.json')\"",
+    "build": "tsc -p tsconfig.json",
     "build:clean": "npm run clean && npm run build",
     "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"

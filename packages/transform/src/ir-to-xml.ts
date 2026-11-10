@@ -4,10 +4,6 @@
  * on every export (ADR 0009).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-
 import {
   ENGINE_KEYS,
   EXPRESSION_OPEN,
@@ -68,28 +64,11 @@ const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 /** Written when a process authors none; the printer omits exactly this value. */
 export const HISTORY_TIME_TO_LIVE = 'P30D';
 
-/** Read, not imported `with { type: 'json' }`, which needs `resolveJsonModule`. */
-const operatonModdleExtension = JSON.parse(
-  readFileSync(resolveOperatonModdlePath(), 'utf-8'),
-) as { uri: string };
+// Imported statically so the transform has no Node-only code and bundles for
+// the browser as is.
+import operatonModdleExtension from './operaton-moddle.json' with { type: 'json' };
 
 export const OPERATON_NS = operatonModdleExtension.uri;
-
-function resolveOperatonModdlePath(): string {
-  const moduleDir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(moduleDir, 'operaton-moddle.json'),
-    join(moduleDir, '..', 'src', 'operaton-moddle.json'),
-  ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  throw new Error(
-    `Could not locate operaton-moddle.json. Looked in: ${candidates.join(', ')}`,
-  );
-}
 
 /**
  * Shared by both directions. `camunda:` stays unregistered: `xmlToIr` rewrites
