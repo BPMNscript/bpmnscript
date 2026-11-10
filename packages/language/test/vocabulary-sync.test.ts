@@ -199,3 +199,24 @@ describe('splitFencedScript', () => {
     ]);
   });
 });
+
+describe('the Monarch grammar patch', () => {
+  test('keeps the keyword list, the fence state and the else-fail rule first', async () => {
+    // A variable specifier keeps tsc out of the generated, gitignored file.
+    const file = '../syntaxes/bpmn-script.monarch.ts';
+    const { default: monarch } = (await import(file)) as {
+      default: {
+        keywords: string[];
+        tokenizer: { fence?: unknown; initial: { regex: RegExp }[] };
+      };
+    };
+    const services = createBpmnScriptServices(EmptyFileSystem);
+    expect([...monarch.keywords].sort()).toEqual(
+      [...reservedWordsOf(services.BpmnScript.Grammar)].sort(),
+    );
+    expect(monarch.tokenizer.fence).toBeDefined();
+    expect(monarch.tokenizer.initial[0]!.regex.source).toContain(
+      `(else)(\\s+)(${ELSE_FAIL_WORD})`,
+    );
+  });
+});

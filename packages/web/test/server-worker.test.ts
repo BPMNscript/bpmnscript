@@ -198,3 +198,14 @@ describe('server-worker.js bundle', () => {
     expect(result).toMatchObject({ ok: false, kind: 'error' });
   });
 });
+
+describe('THIRD_PARTY_NOTICES.txt', () => {
+  it('names the bundled packages', () => {
+    const notices = readFileSync(
+      fileURLToPath(new URL('../out/THIRD_PARTY_NOTICES.txt', import.meta.url)),
+      'utf8',
+    );
+    expect(notices).toMatch(/^langium@\S+ \(MIT\)$/m);
+    expect(notices).toMatch(/^chevrotain@\S+ \(Apache-2\.0\)$/m);
+  });
+});

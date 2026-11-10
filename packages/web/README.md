@@ -35,8 +35,11 @@ This writes `packages/web/out/`:
 | `language-configuration.json` | Comments, brackets, auto-closing pairs and word pattern, as plain JSON     |
 | `LICENSE`                     | The BPMNscript license                                                     |
 | `operaton-moddle.LICENSE`     | The license of the Operaton moddle extension that is bundled in the worker |
+| `THIRD_PARTY_NOTICES.txt`     | Name, version, license and license text of every npm package in the worker |
 
 `npm run build` builds it too.
+
+`wordPattern` in `language-configuration.json` is a regex source string, so convert it with `new RegExp(config.wordPattern)` before Monaco's `setLanguageConfiguration`.
 
 ## Usage
 
