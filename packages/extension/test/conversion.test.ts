@@ -46,21 +46,15 @@ vi.mock('vscode', () => ({
   },
 }));
 
-vi.mock('../src/extension/conversion-core.js', async (importOriginal) => ({
+vi.mock('@bpmn-script/conversion', async (importOriginal) => ({
   ...(await importOriginal()),
   compileDslToBpmn: vi.fn(),
   decompileBpmnToDsl: vi.fn(),
 }));
 
 import * as vscode from 'vscode';
-import {
-  compileDslToBpmn,
-  decompileBpmnToDsl,
-} from '../src/extension/conversion-core.js';
-import type {
-  CompileResult,
-  DecompileResult,
-} from '../src/extension/conversion-core.js';
+import { compileDslToBpmn, decompileBpmnToDsl } from '@bpmn-script/conversion';
+import type { CompileResult, DecompileResult } from '@bpmn-script/conversion';
 import {
   compileCommand,
   decompileCommand,

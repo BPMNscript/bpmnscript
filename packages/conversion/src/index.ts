@@ -1,4 +1,4 @@
-// No `vscode` import, so unit tests run this without an editor host.
+// Free of Node APIs and of `vscode`, so it runs in an editor host, Node or a browser worker.
 
 import {
   createBpmnScriptServices,
@@ -8,7 +8,6 @@ import {
 import type { Model } from '@bpmn-script/language';
 import { EmptyFileSystem, URI } from 'langium';
 import type { LangiumDocument } from 'langium';
-import * as path from 'node:path';
 import {
   astToIr,
   irToXml,
@@ -186,11 +185,4 @@ export async function decompileBpmnToDsl(
     warnings: [...warnings, ...printWarnings],
     buildErrors,
   };
-}
-
-// Importing the cli's `resolveOutputPath` would pull chalk and commander into the bundle.
-export function swapExtension(filePath: string, newExt: string): string {
-  const dir = path.dirname(filePath);
-  const base = path.basename(filePath, path.extname(filePath));
-  return path.join(dir, `${base}${newExt}`);
 }

@@ -37,9 +37,10 @@
   },
   "workspaces": [
     "packages/language",
+    "packages/transform",
+    "packages/conversion",
     "packages/cli",
     "packages/extension",
-    "packages/transform",
     "tests"
   ]
 }

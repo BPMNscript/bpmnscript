@@ -67,3 +67,4 @@ packages/**/test/*.d.ts
 packages/cli/LICENSE
 packages/language/LICENSE
 packages/transform/LICENSE
+packages/conversion/LICENSE

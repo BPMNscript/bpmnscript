@@ -9,14 +9,8 @@ import { createBpmnScriptServices, Diagnostic } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import { xmlToIr } from '@bpmn-script/transform';
 
-import {
-  compileDslToBpmn,
-  decompileBpmnToDsl,
-} from '../src/extension/conversion-core.js';
-import type {
-  CompileResult,
-  DecompileResult,
-} from '../src/extension/conversion-core.js';
+import { compileDslToBpmn, decompileBpmnToDsl } from '../src/index.js';
+import type { CompileResult, DecompileResult } from '../src/index.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 

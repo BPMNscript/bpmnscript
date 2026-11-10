@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import {
-  compileDslToBpmn,
-  decompileBpmnToDsl,
-  swapExtension,
-} from './conversion-core.js';
+import { compileDslToBpmn, decompileBpmnToDsl } from '@bpmn-script/conversion';
+
+// Importing the cli's `resolveOutputPath` would pull chalk and commander into the bundle.
+export function swapExtension(filePath: string, newExt: string): string {
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath, path.extname(filePath));
+  return path.join(dir, `${base}${newExt}`);
+}
 
 type ConvertHandler = (uri?: vscode.Uri) => Promise<vscode.Uri | undefined>;
 
