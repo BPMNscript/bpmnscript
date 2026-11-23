@@ -116,13 +116,13 @@
     "@bpmn-script/conversion": "0.1.1",
     "@bpmn-script/language": "0.1.1",
     "@bpmn-script/transform": "0.1.1",
-    "langium": "^4.4.0",
+    "langium": "^4.4.2",
     "vscode-languageclient": "~10.1.2"
   },
   "devDependencies": {
-    "@types/vscode": "~1.134.0",
-    "@vscode/vsce": "^4.0.0",
-    "concurrently": "^10.0.6",
+    "@types/vscode": "~1.146.0",
+    "@vscode/vsce": "^4.1.1",
+    "concurrently": "^10.0.7",
     "esbuild": "~0.28.2",
     "vitest": "^5.0.5"
   },
