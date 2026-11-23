@@ -1,9 +1,5 @@
 # Contributing to BPMNscript
 
-> This project is being developed as part of a bachelor's thesis.
-> Bug reports are welcome now.
-> Pull requests are accepted after the thesis is submitted, and the guidelines below apply from then on.
-
 ## Development setup
 
 ### Prerequisites
