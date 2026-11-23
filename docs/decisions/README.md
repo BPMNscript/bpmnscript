@@ -41,3 +41,4 @@ The syntax a record mentions is taught in full in the [language reference](../..
 | [0031](0031-inclusive-and-event-based-gateways.md)                     | Inclusive and event-based gateways                                                     | accepted |
 | [0032](0032-expressions-raw-templates-and-escapes.md)                  | Expressions: raw templates, escapes, and what is lowered as EL                         | accepted |
 | [0033](0033-browser-package-and-shared-conversion.md)                  | A browser package beside the extension, on a shared conversion core                    | accepted |
+| [0034](0034-browser-editor-core-as-source.md)                          | The browser editor core ships as TypeScript source                                     | accepted |

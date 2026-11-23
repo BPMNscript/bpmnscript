@@ -18,6 +18,9 @@
     },
     {
       "path": "./packages/web/tsconfig.json"
+    },
+    {
+      "path": "./packages/editor/tsconfig.json"
     }
   ]
 }

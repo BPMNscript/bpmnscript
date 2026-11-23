@@ -154,6 +154,7 @@ packages/
   cli/           bpmns build / parse commands
   extension/     VS Code extension: language server, conversion commands, sidebar
   web/           Browser web worker: language server plus compile and decompile requests
+  editor/        Browser editor core on the worker: Monaco setup, language client, theme, diagram helpers
 tests/           Round-trip, fixture, and end-to-end tests
 examples/
   spring-boot/   Operaton + Spring Boot deployment, also the e2e fixture

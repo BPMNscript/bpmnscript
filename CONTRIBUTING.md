@@ -58,6 +58,7 @@ npm test --workspace packages/transform                                      # T
 npm test --workspace packages/cli                                            # CLI package only
 npm test --workspace packages/extension                                      # Extension package only
 npm test --workspace packages/web                                            # Browser worker bundle only
+npm test --workspace packages/editor                                         # Browser editor core only
 FUZZ_N=2000 FUZZ_OUT=/tmp/fuzz npm test --workspace tests -- fuzz.test.ts    # Round-trip fuzz over 2000 generated programs
 ```
 

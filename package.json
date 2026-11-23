@@ -43,6 +43,7 @@
     "packages/cli",
     "packages/extension",
     "packages/web",
+    "packages/editor",
     "tests"
   ]
 }
