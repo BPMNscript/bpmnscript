@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "src",
+    "lib": ["ES2024", "WebWorker"],
+    "types": []
+  },
+  "references": [
+    { "path": "../language/tsconfig.src.json" },
+    { "path": "../conversion/tsconfig.json" }
+  ],
+  "include": ["src/**/*.ts"]
+}

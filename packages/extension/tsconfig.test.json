@@ -6,7 +6,8 @@
   },
   "references": [
     { "path": "../language/tsconfig.src.json" },
-    { "path": "../transform/tsconfig.json" }
+    { "path": "../transform/tsconfig.json" },
+    { "path": "../conversion/tsconfig.json" }
   ],
   "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

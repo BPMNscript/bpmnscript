@@ -7,6 +7,9 @@
       "fileExtensions": ["bpmnscript"],
       "textMate": {
         "out": "syntaxes/bpmn-script.tmLanguage.json"
+      },
+      "monarch": {
+        "out": "syntaxes/bpmn-script.monarch.ts"
       }
     }
   ],

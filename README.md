@@ -150,8 +150,11 @@ The IR is a small set of plain TypeScript objects that describe one process in t
 packages/
   language/      Langium grammar, AST, validator, language server
   transform/     IR types and the four transforms (AST/IR/XML/DSL)
+  conversion/    In-memory compile and decompile, shared by the extension and the browser worker
   cli/           bpmns build / parse commands
   extension/     VS Code extension: language server, conversion commands, sidebar
+  web/           Browser web worker: language server plus compile and decompile requests
+  editor/        Browser editor core on the worker: Monaco setup, language client, theme, diagram helpers
 tests/           Round-trip, fixture, and end-to-end tests
 examples/
   spring-boot/   Operaton + Spring Boot deployment, also the e2e fixture

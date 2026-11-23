@@ -37,7 +37,7 @@
     "clean": "node -e \"for (const f of [...fs.globSync('*.tsbuildinfo'), 'out']) fs.rmSync(f, { recursive: true, force: true })\"",
     "build": "npm run langium:generate && tsc -p tsconfig.src.json",
     "build:clean": "npm run clean && npm run build",
-    "langium:generate": "langium generate && node textmate-postprocess.mjs",
+    "langium:generate": "langium generate && node textmate-postprocess.mjs && node monarch-postprocess.mjs",
     "langium:watch": "langium generate --watch",
     "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"

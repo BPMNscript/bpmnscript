@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { swapExtension } from './conversion-core.js';
+import { swapExtension } from './conversion.js';
 
 // media/sidebar.js reads this shape untyped: change both.
 interface Counterpart {

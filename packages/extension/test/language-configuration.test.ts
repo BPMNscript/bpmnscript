@@ -9,11 +9,12 @@ const EXTENSION_DIR = path.resolve(
   '..',
 );
 
+// The canonical file; build:prepare copies it into the extension.
 // JSONC: whole comment lines are stripped, not a trailing `//`, which would
 // eat the "lineComment": "//" value.
 function readWordPattern(): unknown {
   const raw = readFileSync(
-    path.join(EXTENSION_DIR, 'language-configuration.json'),
+    path.join(EXTENSION_DIR, '../language/language-configuration.json'),
     'utf8',
   );
   return JSON.parse(raw.replace(/^\s*\/\/.*$/gm, '')).wordPattern;

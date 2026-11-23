@@ -1,0 +1,41 @@
+{
+  "name": "@bpmn-script/editor",
+  "description": "Browser editor core for BPMNscript: Monaco setup, the language client on the web worker, theme, and diagram helpers, as TypeScript source",
+  "version": "0.1.1",
+  "license": "Apache-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BPMNscript/bpmnscript.git",
+    "directory": "packages/editor"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.2.3"
+  },
+  "files": [
+    "src"
+  ],
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b tsconfig.json tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@codingame/monaco-vscode-api": "^37.6.1",
+    "@codingame/monaco-vscode-editor-api": "^37.6.1",
+    "monaco-languageclient": "^11.0.3",
+    "vscode-languageclient": "~10.1.2"
+  },
+  "devDependencies": {
+    "@bpmn-script/conversion": "0.1.1",
+    "@codingame/monaco-vscode-api": "37.6.1",
+    "@codingame/monaco-vscode-editor-api": "37.6.1",
+    "monaco-languageclient": "11.0.3",
+    "vitest": "^5.0.5",
+    "vscode-languageclient": "10.1.2"
+  }
+}

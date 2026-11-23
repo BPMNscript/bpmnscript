@@ -1,0 +1,44 @@
+{
+  "name": "@bpmn-script/web",
+  "description": "BPMNscript language server with compile and decompile in one browser web worker",
+  "version": "0.1.1",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BPMNscript/bpmnscript.git",
+    "directory": "packages/web"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.2.3"
+  },
+  "files": [
+    "out",
+    "src"
+  ],
+  "exports": {
+    "./server-worker.js": "./out/server-worker.js",
+    "./monarch.js": "./out/monarch.js",
+    "./language-configuration.json": "./out/language-configuration.json"
+  },
+  "scripts": {
+    "prepack": "node -e \"fs.cpSync('../../LICENSE', 'LICENSE')\"",
+    "clean": "node -e \"for (const f of [...fs.globSync('*.tsbuildinfo'), 'out']) fs.rmSync(f, { recursive: true, force: true })\"",
+    "build": "tsc -b tsconfig.json && node esbuild.mjs",
+    "build:post": "node esbuild.mjs",
+    "build:clean": "npm run clean && npm run build",
+    "typecheck": "tsc -b tsconfig.json tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bpmn-script/conversion": "0.1.1",
+    "@bpmn-script/language": "0.1.1",
+    "langium": "^4.4.0",
+    "vscode-languageserver": "~10.1.2"
+  },
+  "devDependencies": {
+    "esbuild": "~0.28.2",
+    "vitest": "^5.0.5"
+  }
+}

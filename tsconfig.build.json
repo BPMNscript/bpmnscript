@@ -12,6 +12,15 @@
     },
     {
       "path": "./packages/transform/tsconfig.json"
+    },
+    {
+      "path": "./packages/conversion/tsconfig.json"
+    },
+    {
+      "path": "./packages/web/tsconfig.json"
+    },
+    {
+      "path": "./packages/editor/tsconfig.json"
     }
   ]
 }

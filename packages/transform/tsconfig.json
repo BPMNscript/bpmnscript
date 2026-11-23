@@ -5,5 +5,5 @@
     "outDir": "out"
   },
   "references": [{ "path": "../language/tsconfig.src.json" }],
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/operaton-moddle.json"]
 }

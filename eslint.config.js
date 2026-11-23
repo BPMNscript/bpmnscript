@@ -103,7 +103,27 @@ export default [
   },
 
   // -----------------------------------------------------------------------
-  // 6. Prettier — disables all ESLint rules that conflict with Prettier.
+  // 6. Browser worker source — web worker globals (`self`).
+  // -----------------------------------------------------------------------
+  {
+    files: ['packages/web/src/**/*.ts'],
+    languageOptions: {
+      globals: globals.worker,
+    },
+  },
+
+  // -----------------------------------------------------------------------
+  // 7. Browser editor source — DOM globals (`document`, `Worker`).
+  // -----------------------------------------------------------------------
+  {
+    files: ['packages/editor/src/**/*.ts'],
+    languageOptions: {
+      globals: globals.browser,
+    },
+  },
+
+  // -----------------------------------------------------------------------
+  // 8. Prettier — disables all ESLint rules that conflict with Prettier.
   // -----------------------------------------------------------------------
   prettierConfig,
 ];

@@ -57,11 +57,14 @@ npm test --workspace packages/language                                       # L
 npm test --workspace packages/transform                                      # Transform package only
 npm test --workspace packages/cli                                            # CLI package only
 npm test --workspace packages/extension                                      # Extension package only
+npm test --workspace packages/web                                            # Browser worker bundle only
+npm test --workspace packages/editor                                         # Browser editor core only
 FUZZ_N=2000 FUZZ_OUT=/tmp/fuzz npm test --workspace tests -- fuzz.test.ts    # Round-trip fuzz over 2000 generated programs
 ```
 
 `npm test` includes the round-trip fuzz over the first 200 generated programs.
 The extension tests use the compiled `out/` directories of `@bpmn-script/language` and `@bpmn-script/transform`, so run `npm run build` before running that suite on its own.
+The web tests load the built `packages/web/out/server-worker.js`, so they need `npm run build` (or `npm run build:web`) first as well.
 
 ### Code style
 

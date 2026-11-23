@@ -16,6 +16,7 @@
     "clean": "npm run clean --workspaces --if-present",
     "watch": "tsc -b tsconfig.build.json --watch",
     "build": "npm run langium:generate && tsc -b tsconfig.build.json && npm run build:post --workspaces --if-present",
+    "build:web": "npm run langium:generate && tsc -b packages/web/tsconfig.json && npm run build:post -w packages/web",
     "build:clean": "npm run clean && npm run build",
     "langium:generate": "npm run --workspace packages/language langium:generate",
     "langium:watch": "npm run --workspace packages/language langium:watch",
@@ -37,9 +38,12 @@
   },
   "workspaces": [
     "packages/language",
+    "packages/transform",
+    "packages/conversion",
     "packages/cli",
     "packages/extension",
-    "packages/transform",
+    "packages/web",
+    "packages/editor",
     "tests"
   ]
 }
